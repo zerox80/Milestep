@@ -1093,33 +1093,78 @@ fn admin_view(
                             let email = user.email.clone();
                             let email_for_add = user.email.clone();
                             let workspace_id_for_add = workspace_id.clone();
+                            let user_id = user.id.clone();
+                            let user_name = user.name.clone();
+                            let user_name_for_delete = user.name.clone();
+                            let membership_id = user.membership_id.clone();
+                            let current_account_role = user.role.clone();
                             let is_member = user.membership_id.is_some();
-                            let role = user.role.as_ref().map(|r| role_label(r, lang.get()).to_string()).unwrap_or_else(|| {
-                                if lang.get() == Lang::De { "Nicht im Workspace".into() } else { "Not in workspace".into() }
-                            });
+                            let (add_role, set_add_role) = create_signal(Role::Member);
+                            let can_change_account_owner = can_owner || current_account_role != Some(Role::Owner);
                             let created = if lang.get() == Lang::De { user.created_label_de.clone() } else { user.created_label_en.clone() };
                             view! {
                                 <div class="registered-row">
                                     <span class="avatar tiny">{user.initials.clone()}</span>
                                     <span><strong>{user.name.clone()}</strong><small>{email}</small></span>
-                                    <span>{role}</span>
+                                    <span>
+                                        {if let Some(member_id) = membership_id.clone() {
+                                            if can_change_account_owner {
+                                                view! {
+                                                    <select class="role-select" on:change=move |ev| {
+                                                        update_member_role(
+                                                            member_id.clone(),
+                                                            role_from_value(&select_value(&ev)),
+                                                            set_data,
+                                                            set_error,
+                                                        );
+                                                    }>
+                                                        <option value="owner" selected=current_account_role == Some(Role::Owner) disabled=!can_owner>"Owner"</option>
+                                                        <option value="admin" selected=current_account_role == Some(Role::Admin)>"Admin"</option>
+                                                        <option value="member" selected=current_account_role == Some(Role::Member)>{move || if lang.get() == Lang::De { "Mitglied" } else { "Member" }}</option>
+                                                        <option value="viewer" selected=current_account_role == Some(Role::Viewer)>{move || if lang.get() == Lang::De { "Betrachter" } else { "Viewer" }}</option>
+                                                    </select>
+                                                }.into_view()
+                                            } else {
+                                                view! { <b>{role_label(current_account_role.as_ref().unwrap_or(&Role::Member), lang.get())}</b> }.into_view()
+                                            }
+                                        } else {
+                                            view! {
+                                                <select class="role-select" on:change=move |ev| set_add_role.set(role_from_value(&select_value(&ev)))>
+                                                    <option value="admin">"Admin"</option>
+                                                    <option value="member" selected>{move || if lang.get() == Lang::De { "Mitglied" } else { "Member" }}</option>
+                                                    <option value="viewer">{move || if lang.get() == Lang::De { "Betrachter" } else { "Viewer" }}</option>
+                                                </select>
+                                            }.into_view()
+                                        }}
+                                    </span>
                                     <small>{created}</small>
-                                    {if !is_member {
-                                        view! {
-                                            <button class="link-button" on:click=move |_| {
-                                                add_existing_user_to_workspace(
-                                                    workspace_id_for_add.clone(),
-                                                    email_for_add.clone(),
-                                                    Role::Member,
-                                                    lang,
-                                                    set_data,
-                                                    set_error,
-                                                );
-                                            }>{move || if lang.get() == Lang::De { "Hinzufuegen" } else { "Add" }}</button>
-                                        }.into_view()
-                                    } else {
-                                        view! { <b>{move || if lang.get() == Lang::De { "Mitglied" } else { "Member" }}</b> }.into_view()
-                                    }}
+                                    <span class="admin-actions">
+                                        {if !is_member {
+                                            view! {
+                                                <button class="link-button" on:click=move |_| {
+                                                    add_existing_user_to_workspace(
+                                                        workspace_id_for_add.clone(),
+                                                        email_for_add.clone(),
+                                                        add_role.get_untracked(),
+                                                        lang,
+                                                        set_data,
+                                                        set_error,
+                                                    );
+                                                }>{move || if lang.get() == Lang::De { "Hinzufuegen" } else { "Add" }}</button>
+                                            }.into_view()
+                                        } else {
+                                            view! { <b>{move || if lang.get() == Lang::De { "Im Workspace" } else { "In workspace" }}</b> }.into_view()
+                                        }}
+                                        {if can_owner && user_id != current_user_id {
+                                            view! {
+                                                <button class="danger-link" title=format!("Delete {user_name}") on:click=move |_| {
+                                                    delete_registered_user(user_id.clone(), user_name_for_delete.clone(), lang, set_data, set_error);
+                                                }>{move || if lang.get() == Lang::De { "Loeschen" } else { "Delete" }}</button>
+                                            }.into_view()
+                                        } else {
+                                            view! { <span/> }.into_view()
+                                        }}
+                                    </span>
                                 </div>
                             }
                         }).collect_view()}
@@ -1798,6 +1843,32 @@ fn remove_member(
     }
     spawn_local(async move {
         match api_delete_empty(&format!("/api/memberships/{membership_id}")).await {
+            Ok(()) => refresh_bootstrap(set_data, set_error).await,
+            Err(err) => set_error.set(Some(err.message)),
+        }
+    });
+}
+
+fn delete_registered_user(
+    user_id: String,
+    user_name: String,
+    lang: ReadSignal<Lang>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) {
+    let confirm_text = if lang.get_untracked() == Lang::De {
+        format!("{user_name} wirklich komplett loeschen? Das entfernt den Account und eigene Solo-Workspaces.")
+    } else {
+        format!("Delete {user_name} completely? This removes the account and own solo workspaces.")
+    };
+    let confirmed = web_sys::window()
+        .and_then(|w| w.confirm_with_message(&confirm_text).ok())
+        .unwrap_or(false);
+    if !confirmed {
+        return;
+    }
+    spawn_local(async move {
+        match api_delete_empty(&format!("/api/users/{user_id}")).await {
             Ok(()) => refresh_bootstrap(set_data, set_error).await,
             Err(err) => set_error.set(Some(err.message)),
         }

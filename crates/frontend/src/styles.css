@@ -219,10 +219,11 @@ p { margin: 0; }
 .danger-link { color: var(--accent-press); font-weight: 800; }
 .invite-box { display: grid; grid-template-columns: 1fr 130px auto; gap: 10px; align-items: center; }
 .invite-result { margin-top: 12px; padding: 10px 12px; border-radius: 9px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); font-weight: 700; overflow-wrap: anywhere; }
-.registered-row { display: grid; grid-template-columns: 28px 1.4fr 1fr .8fr auto; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.registered-row { display: grid; grid-template-columns: 28px 1.4fr minmax(120px,.8fr) .7fr auto; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .registered-row span span, .registered-row strong, .registered-row small { display: block; }
 .registered-row small { color: var(--ink-3); }
 .registered-row b { color: var(--good); }
+.admin-actions { display: inline-flex; justify-content: end; align-items: center; gap: 12px; }
 .muted { color: var(--ink-2); }
 .sys-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; }
 .sys-grid span { background: var(--surface-2); border-radius: 10px; padding: 12px; box-shadow: inset 0 0 0 1px var(--line); }
@@ -282,6 +283,7 @@ p { margin: 0; }
   .topbar { flex-wrap: wrap; }
   .board-grid, .stats-row, .two-col, .admin-grid { grid-template-columns: 1fr; }
   .admin-row, .invite-box, .registered-row { grid-template-columns: 1fr; align-items: stretch; }
+  .admin-actions { justify-content: start; }
   .ticket-head { display: none; }
   .ticket-row { grid-template-columns: 1fr; align-items: start; }
   .calendar-grid { grid-template-columns: repeat(2, 1fr); }

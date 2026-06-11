@@ -342,6 +342,7 @@ fn build_router(state: AppState) -> Router {
             "/memberships/{id}",
             patch(update_membership).delete(remove_membership),
         )
+        .route("/users/{id}", axum::routing::delete(delete_user))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1743,6 +1744,102 @@ async fn remove_membership(
         "removed member",
         "membership",
         Some(membership_id),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let actor_id = uuid_from_str(&ctx.user.id)?;
+    let target_id = uuid_from_str(&id)?;
+    if actor_id == target_id {
+        return Err(AppError::BadRequest(
+            "cannot delete your own account".into(),
+        ));
+    }
+
+    let actor_membership: MembershipWorkspaceRow = sqlx::query_as(
+        "SELECT workspace_id, user_id, role \
+         FROM memberships WHERE user_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(actor_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::Forbidden)?;
+    if role_from_db(&actor_membership.role)? != Role::Owner {
+        return Err(AppError::Forbidden);
+    }
+
+    let target_exists: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE id = $1")
+        .bind(target_id)
+        .fetch_optional(&state.db)
+        .await?;
+    if target_exists.is_none() {
+        return Err(AppError::NotFound);
+    }
+
+    let mut tx = state.db.begin().await?;
+    let target_memberships: Vec<MembershipWorkspaceRow> = sqlx::query_as(
+        "SELECT workspace_id, user_id, role \
+         FROM memberships WHERE user_id = $1 AND status = 'active' FOR UPDATE",
+    )
+    .bind(target_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut workspaces_to_delete = Vec::new();
+    for membership in &target_memberships {
+        if role_from_db(&membership.role)? != Role::Owner {
+            continue;
+        }
+        let owners: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM memberships \
+             WHERE workspace_id = $1 AND role = 'owner' AND status = 'active' FOR UPDATE",
+        )
+        .bind(membership.workspace_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if owners.len() > 1 {
+            continue;
+        }
+        let (members,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM memberships WHERE workspace_id = $1 AND status = 'active'",
+        )
+        .bind(membership.workspace_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if members <= 1 {
+            workspaces_to_delete.push(membership.workspace_id);
+        } else {
+            return Err(AppError::BadRequest(
+                "cannot delete user because they are the last owner of another workspace".into(),
+            ));
+        }
+    }
+
+    if !workspaces_to_delete.is_empty() {
+        sqlx::query("DELETE FROM workspaces WHERE id = ANY($1)")
+            .bind(&workspaces_to_delete)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await?;
+    record_audit(
+        &mut *tx,
+        actor_membership.workspace_id,
+        actor_id,
+        "deleted user",
+        "user",
+        Some(target_id),
     )
     .await?;
     tx.commit().await?;
