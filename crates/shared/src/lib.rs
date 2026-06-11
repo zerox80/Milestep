@@ -1,4 +1,15 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Distinguishes an absent JSON field (`None` = leave unchanged) from an
+/// explicit `null` (`Some(None)` = clear the value). Use together with
+/// `#[serde(default, deserialize_with = "double_option")]`.
+pub fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -99,6 +110,7 @@ pub struct StatusDto {
     pub name_de: String,
     pub name_en: String,
     pub position: i32,
+    pub is_done: bool,
     pub color: String,
 }
 
@@ -146,6 +158,7 @@ pub struct TaskDto {
     pub priority: Priority,
     pub status_id: String,
     pub status_position: i32,
+    pub status_is_done: bool,
     pub start_date: Option<String>,
     pub due_date: Option<String>,
     pub phase: String,
@@ -254,7 +267,9 @@ pub struct UpdateTaskRequest {
     pub tag_color: Option<String>,
     pub priority: Option<Priority>,
     pub status_id: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
     pub start_date: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub due_date: Option<Option<String>>,
     pub phase: Option<String>,
     pub assignee_ids: Option<Vec<String>>,
@@ -301,4 +316,22 @@ pub struct UpdateMembershipRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiErrorDto {
     pub error: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn double_option_distinguishes_missing_null_and_value() {
+        let missing: UpdateTaskRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.due_date, None);
+
+        let null: UpdateTaskRequest = serde_json::from_str(r#"{"due_date": null}"#).unwrap();
+        assert_eq!(null.due_date, Some(None));
+
+        let value: UpdateTaskRequest =
+            serde_json::from_str(r#"{"due_date": "2026-06-18"}"#).unwrap();
+        assert_eq!(value.due_date, Some(Some("2026-06-18".to_string())));
+    }
 }

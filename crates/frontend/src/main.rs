@@ -1,4 +1,4 @@
-﻿use gloo_net::http::Request;
+use gloo_net::http::Request;
 use kowobau_shared::*;
 use leptos::*;
 use leptos_router::*;
@@ -85,9 +85,14 @@ fn AppRoot() -> impl IntoView {
                     set_data.set(Some(next));
                     set_error.set(None);
                 }
-                Err(_) => {
+                Err(err) if err.status == 401 => {
+                    // Not logged in: show the auth screen without an error.
                     set_data.set(None);
                     set_error.set(None);
+                }
+                Err(err) => {
+                    set_data.set(None);
+                    set_error.set(Some(err.message));
                 }
             }
             set_loading.set(false);
@@ -176,7 +181,7 @@ fn auth_shell(
 
             match result {
                 Ok(_) => reload(),
-                Err(err) => set_local_error.set(Some(err)),
+                Err(err) => set_local_error.set(Some(err.message)),
             }
             set_busy.set(false);
         });
@@ -354,7 +359,7 @@ fn dashboard(
                 <nav class="side-nav">
                     <span class="side-label">{move || if lang.get() == Lang::De { "Arbeitsbereich" } else { "Workspace" }}</span>
                     {nav_button(NavView::Overview, nav, set_nav, lang, None)}
-                    {nav_button(NavView::Board, nav, set_nav, lang, Some(boot.tasks.iter().filter(|t| t.status_position < 3).count()))}
+                    {nav_button(NavView::Board, nav, set_nav, lang, Some(boot.tasks.iter().filter(|t| !t.status_is_done).count()))}
                     {nav_button(NavView::Calendar, nav, set_nav, lang, None)}
                     <span class="side-label">{move || if lang.get() == Lang::De { "Planung" } else { "Planning" }}</span>
                     {nav_button(NavView::Gantt, nav, set_nav, lang, None)}
@@ -493,20 +498,24 @@ fn overview_view(
     lang: ReadSignal<Lang>,
     set_open_task: WriteSignal<Option<String>>,
 ) -> View {
-    let open = boot.tasks.iter().filter(|t| t.status_position < 3).count();
+    let today_str = today_iso();
+    let open = boot.tasks.iter().filter(|t| !t.status_is_done).count();
     let today = boot
         .tasks
         .iter()
-        .filter(|t| t.due_date.as_deref() == Some("2026-06-11") && t.status_position < 3)
+        .filter(|t| t.due_date.as_deref() == Some(today_str.as_str()) && !t.status_is_done)
         .count();
     let overdue = boot
         .tasks
         .iter()
         .filter(|t| {
-            t.due_date.as_deref().is_some_and(|d| d < "2026-06-11") && t.status_position < 3
+            t.due_date
+                .as_deref()
+                .is_some_and(|d| d < today_str.as_str())
+                && !t.status_is_done
         })
         .count();
-    let done = boot.tasks.iter().filter(|t| t.status_position == 3).count();
+    let done = boot.tasks.iter().filter(|t| t.status_is_done).count();
     let progress = if boot.tasks.is_empty() {
         0
     } else {
@@ -516,7 +525,10 @@ fn overview_view(
         .tasks
         .iter()
         .filter(|t| {
-            t.status_position < 3 && t.due_date.as_deref().is_some_and(|d| d <= "2026-06-11")
+            !t.status_is_done
+                && t.due_date
+                    .as_deref()
+                    .is_some_and(|d| d <= today_str.as_str())
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -645,13 +657,14 @@ fn calendar_view(
     set_open_task: WriteSignal<Option<String>>,
 ) -> View {
     let all_tasks = boot.tasks.clone();
+    let (year, month, today_day) = now_date();
     view! {
         <div class="calendar-grid">
-            {(1..=30).map(|day| {
-                let iso = format!("2026-06-{day:02}");
+            {(1..=days_in_month(year, month)).map(|day| {
+                let iso = format!("{year:04}-{month:02}-{day:02}");
                 let tasks = all_tasks.iter().filter(|t| t.due_date.as_deref() == Some(iso.as_str())).cloned().collect::<Vec<_>>();
                 view! {
-                    <div class="day-cell">
+                    <div class="day-cell" class:today=move || day == today_day>
                         <strong>{day}</strong>
                         {tasks.into_iter().take(3).map(|task| {
                             let task_id = task.id.clone();
@@ -670,20 +683,48 @@ fn gantt_view(
     set_open_task: WriteSignal<Option<String>>,
 ) -> View {
     let statuses = boot.statuses.clone();
+    let tasks: Vec<TaskDto> = boot
+        .tasks
+        .clone()
+        .into_iter()
+        .filter(|t| {
+            t.start_date.as_deref().and_then(iso_day_number).is_some()
+                && t.due_date.as_deref().and_then(iso_day_number).is_some()
+        })
+        .collect();
+    // Day window spanning all scheduled tasks; positions are day offsets from its start.
+    let min_day = tasks
+        .iter()
+        .filter_map(|t| t.start_date.as_deref().and_then(iso_day_number))
+        .min()
+        .unwrap_or_else(|| iso_day_number(&today_iso()).unwrap_or(0));
+    let max_day = tasks
+        .iter()
+        .filter_map(|t| t.due_date.as_deref().and_then(iso_day_number))
+        .max()
+        .unwrap_or(min_day);
+    let range = (max_day - min_day + 1).max(1) as usize;
+    let row_width = 70 + range * 44;
     view! {
         <div class="gantt-panel">
-            <div class="gantt-scale">{(1..=18).map(|d| view! { <span>{d}</span> }).collect_view()}</div>
-            {boot.tasks.clone().into_iter().filter(|t| t.start_date.is_some() && t.due_date.is_some()).map(|task| {
-                let start = task.start_date.as_deref().unwrap_or("2026-06-01")[8..].parse::<i32>().unwrap_or(1);
-                let due = task.due_date.as_deref().unwrap_or("2026-06-02")[8..].parse::<i32>().unwrap_or(2);
-                let left = ((start - 1).max(0) * 44).max(0);
+            <div class="gantt-scale" style=format!("grid-template-columns: repeat({range}, 44px)")>
+                {(0..range).map(|i| {
+                    let (_, _, d) = civil_from_days(min_day + i as i64);
+                    view! { <span>{d}</span> }
+                }).collect_view()}
+            </div>
+            {tasks.into_iter().map(|task| {
+                let start = task.start_date.as_deref().and_then(iso_day_number).unwrap_or(min_day);
+                let due = task.due_date.as_deref().and_then(iso_day_number).unwrap_or(start);
+                // 70px label gutter, matching the scale's margin-left.
+                let left = 70 + (start - min_day).max(0) * 44;
                 let width = ((due - start + 1).max(1) * 44).max(44);
                 let task_id = task.id.clone();
                 let key = task.key.clone();
                 let title = task_title(&task, lang.get());
                 let color = status_color(&statuses, &task.status_id);
                 view! {
-                    <button class="gantt-row" on:click=move |_| set_open_task.set(Some(task_id.clone()))>
+                    <button class="gantt-row" style=format!("width:{row_width}px") on:click=move |_| set_open_task.set(Some(task_id.clone()))>
                         <span>{key}</span>
                         <i style=format!("left:{left}px;width:{width}px;background:{color}")>{title}</i>
                     </button>
@@ -736,7 +777,7 @@ fn roadmap_view(
         <div class="roadmap-grid">
             {phases.into_iter().map(|(phase, label)| {
                 let tasks = all_tasks.iter().filter(|t| t.phase == phase).cloned().collect::<Vec<_>>();
-                let done = tasks.iter().filter(|t| t.status_position == 3).count();
+                let done = tasks.iter().filter(|t| t.status_is_done).count();
                 let pct = if tasks.is_empty() { 0 } else { done * 100 / tasks.len() };
                 view! {
                     <section class="road-card">
@@ -820,8 +861,9 @@ fn create_task_modal(
 ) -> View {
     let (title, set_title) = create_signal(String::new());
     let (description, set_description) = create_signal(String::new());
-    let (due_date, set_due_date) = create_signal("2026-06-16".to_string());
+    let (due_date, set_due_date) = create_signal(iso_in_days(5));
     let (priority, set_priority) = create_signal(Priority::Medium);
+    let (phase, set_phase) = create_signal("ausfuehrung".to_string());
     let (status_id, set_status_id) = create_signal(
         boot.statuses
             .first()
@@ -850,9 +892,9 @@ fn create_task_modal(
             tag_color: "accent".into(),
             priority: priority.get_untracked(),
             status_id: status_id.get_untracked(),
-            start_date: Some("2026-06-11".into()),
+            start_date: Some(today_iso()),
             due_date: Some(due_date.get_untracked()),
-            phase: "ausfuehrung".into(),
+            phase: phase.get_untracked(),
             assignee_ids: vec![assignee_id.get_untracked()],
             subtasks: vec![],
         };
@@ -868,7 +910,7 @@ fn create_task_modal(
                     set_show_create.set(false);
                     set_error.set(None);
                 }
-                Err(err) => set_error.set(Some(err)),
+                Err(err) => set_error.set(Some(err.message)),
             }
             set_busy.set(false);
         });
@@ -897,6 +939,12 @@ fn create_task_modal(
                     </select>
                     <select on:change=move |ev| set_status_id.set(select_value(&ev))>
                         {boot.statuses.clone().into_iter().map(|s| { let label = status_name(&s, lang.get()).to_string(); view! { <option value=s.id>{label}</option> } }).collect_view()}
+                    </select>
+                    <select on:change=move |ev| set_phase.set(select_value(&ev))>
+                        <option value="planung">{move || if lang.get() == Lang::De { "Planung" } else { "Planning" }}</option>
+                        <option value="vergabe">{move || if lang.get() == Lang::De { "Vergabe" } else { "Tendering" }}</option>
+                        <option value="ausfuehrung" selected>{move || if lang.get() == Lang::De { "Ausführung" } else { "Execution" }}</option>
+                        <option value="abnahme">{move || if lang.get() == Lang::De { "Abnahme" } else { "Handover" }}</option>
                     </select>
                 </div>
                 <footer>
@@ -1146,7 +1194,7 @@ fn optimistic_move(
                 set_error.set(None);
             }
             Err(err) => {
-                set_error.set(Some(err));
+                set_error.set(Some(err.message));
             }
         }
     });
@@ -1181,7 +1229,7 @@ fn toggle_subtask(
         {
             Ok(task) => replace_task(set_data, task),
             Err(err) => {
-                set_error.set(Some(err));
+                set_error.set(Some(err.message));
             }
         }
     });
@@ -1201,7 +1249,7 @@ fn add_comment(
         .await
         {
             Ok(task) => replace_task(set_data, task),
-            Err(err) => set_error.set(Some(err)),
+            Err(err) => set_error.set(Some(err.message)),
         }
     });
 }
@@ -1220,7 +1268,7 @@ fn read_notification(
     });
     spawn_local(async move {
         if let Err(err) = api_empty(&format!("/api/notifications/{id}/read")).await {
-            set_error.set(Some(err));
+            set_error.set(Some(err.message));
         }
     });
 }
@@ -1238,7 +1286,7 @@ fn read_all_notifications(
     });
     spawn_local(async move {
         if let Err(err) = api_empty("/api/notifications/read-all").await {
-            set_error.set(Some(err));
+            set_error.set(Some(err.message));
         }
     });
 }
@@ -1253,66 +1301,84 @@ fn replace_task(set_data: WriteSignal<Option<BootstrapDto>>, task: TaskDto) {
     });
 }
 
-async fn api_get<T: DeserializeOwned>(url: &str) -> Result<T, String> {
+/// API failure carrying the HTTP status so callers can tell "not logged in"
+/// (401) apart from real errors. Network failures use status 0.
+#[derive(Debug, Clone)]
+struct ApiError {
+    status: u16,
+    message: String,
+}
+
+impl ApiError {
+    fn network(message: impl ToString) -> Self {
+        Self {
+            status: 0,
+            message: message.to_string(),
+        }
+    }
+}
+
+async fn api_get<T: DeserializeOwned>(url: &str) -> Result<T, ApiError> {
     let response = Request::get(url)
         .credentials(RequestCredentials::SameOrigin)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(ApiError::network)?;
     decode_response(response).await
 }
 
-async fn api_post<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Result<T, String> {
+async fn api_post<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Result<T, ApiError> {
     let response = Request::post(url)
         .credentials(RequestCredentials::SameOrigin)
         .json(body)
-        .map_err(|e| e.to_string())?
+        .map_err(ApiError::network)?
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(ApiError::network)?;
     decode_response(response).await
 }
 
-async fn api_patch<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Result<T, String> {
+async fn api_patch<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Result<T, ApiError> {
     let response = Request::patch(url)
         .credentials(RequestCredentials::SameOrigin)
         .json(body)
-        .map_err(|e| e.to_string())?
+        .map_err(ApiError::network)?
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(ApiError::network)?;
     decode_response(response).await
 }
 
-async fn api_empty(url: &str) -> Result<(), String> {
+async fn api_empty(url: &str) -> Result<(), ApiError> {
     let response = Request::post(url)
         .credentials(RequestCredentials::SameOrigin)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(ApiError::network)?;
     if response.ok() {
         Ok(())
     } else {
-        Err(response
-            .text()
-            .await
-            .unwrap_or_else(|_| "request failed".into()))
+        Err(error_from_body(&response, response.text().await.ok()))
     }
 }
 
 async fn decode_response<T: DeserializeOwned>(
     response: gloo_net::http::Response,
-) -> Result<T, String> {
+) -> Result<T, ApiError> {
     if response.ok() {
-        response.json::<T>().await.map_err(|e| e.to_string())
+        response.json::<T>().await.map_err(ApiError::network)
     } else {
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "request failed".into());
-        Err(serde_json::from_str::<ApiErrorDto>(&text)
+        Err(error_from_body(&response, response.text().await.ok()))
+    }
+}
+
+fn error_from_body(response: &gloo_net::http::Response, text: Option<String>) -> ApiError {
+    let text = text.unwrap_or_else(|| "request failed".into());
+    ApiError {
+        status: response.status(),
+        message: serde_json::from_str::<ApiErrorDto>(&text)
             .map(|e| e.error)
-            .unwrap_or(text))
+            .unwrap_or(text),
     }
 }
 
@@ -1443,9 +1509,21 @@ fn header_title(boot: &BootstrapDto, nav: NavView, lang: Lang) -> String {
 }
 
 fn header_subtitle(boot: &BootstrapDto, nav: NavView, lang: Lang) -> String {
+    let today = today_iso();
+    let due_today = boot
+        .tasks
+        .iter()
+        .filter(|t| !t.status_is_done && t.due_date.as_deref() == Some(today.as_str()))
+        .count();
     match (nav, lang) {
-        (NavView::Overview, Lang::De) => "Du hast 3 Aufgaben heute fällig.".into(),
-        (NavView::Overview, Lang::En) => "You have 3 tasks due today.".into(),
+        (NavView::Overview, Lang::De) => match due_today {
+            1 => "Du hast 1 Aufgabe heute fällig.".into(),
+            n => format!("Du hast {n} Aufgaben heute fällig."),
+        },
+        (NavView::Overview, Lang::En) => match due_today {
+            1 => "You have 1 task due today.".into(),
+            n => format!("You have {n} tasks due today."),
+        },
         (NavView::Board, Lang::De) => format!(
             "{} Aufgaben · {} Spalten",
             boot.tasks.len(),
@@ -1501,16 +1579,98 @@ fn nav_icon(view: NavView) -> &'static str {
     }
 }
 
-fn fmt_date(iso: &str, lang: Lang) -> String {
-    let parts = iso.split('-').collect::<Vec<_>>();
-    if parts.len() != 3 {
-        return iso.to_string();
+/// Local current date as (year, month 1-12, day 1-31).
+fn now_date() -> (i32, u32, u32) {
+    let d = js_sys::Date::new_0();
+    (d.get_full_year() as i32, d.get_month() + 1, d.get_date())
+}
+
+fn today_iso() -> String {
+    let (y, m, d) = now_date();
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn iso_in_days(days: i64) -> String {
+    let ms = js_sys::Date::now() + days as f64 * 86_400_000.0;
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms));
+    format!(
+        "{:04}-{:02}-{:02}",
+        d.get_full_year(),
+        d.get_month() + 1,
+        d.get_date()
+    )
+}
+
+fn parse_iso(iso: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = iso.split('-');
+    let y = parts.next()?.parse().ok()?;
+    let m: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    ((1..=12).contains(&m) && (1..=31).contains(&d)).then_some((y, m, d))
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 31,
     }
-    let day = parts[2].trim_start_matches('0');
-    if lang == Lang::De {
-        format!("{day}. Jun")
+}
+
+/// Days since 1970-01-01 (Howard Hinnant's civil-calendar algorithm).
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = y as i64 - if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * ((m as i64 + 9) % 12) + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719_468
+}
+
+/// Inverse of `days_from_civil`.
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    ((if m <= 2 { y + 1 } else { y }) as i32, m, d)
+}
+
+fn iso_day_number(iso: &str) -> Option<i64> {
+    parse_iso(iso).map(|(y, m, d)| days_from_civil(y, m, d))
+}
+
+const MONTHS_DE: [&str; 12] = [
+    "Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
+];
+const MONTHS_EN: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+fn fmt_date(iso: &str, lang: Lang) -> String {
+    let Some((_, m, d)) = parse_iso(iso) else {
+        return iso.to_string();
+    };
+    let month = if lang == Lang::De {
+        MONTHS_DE[(m - 1) as usize]
     } else {
-        format!("Jun {day}")
+        MONTHS_EN[(m - 1) as usize]
+    };
+    if lang == Lang::De {
+        format!("{d}. {month}")
+    } else {
+        format!("{month} {d}")
     }
 }
 
@@ -1520,4 +1680,41 @@ fn select_value(ev: &web_sys::Event) -> String {
 
 fn textarea_value(ev: &web_sys::Event) -> String {
     event_target::<HtmlTextAreaElement>(ev).value()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn civil_day_roundtrip() {
+        for iso in ["2026-06-11", "2024-02-29", "1999-12-31", "2026-01-01"] {
+            let n = iso_day_number(iso).expect("parses");
+            let (y, m, d) = civil_from_days(n);
+            assert_eq!(format!("{y:04}-{m:02}-{d:02}"), iso);
+        }
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(
+            days_from_civil(2026, 6, 12) - days_from_civil(2026, 6, 11),
+            1
+        );
+    }
+
+    #[test]
+    fn month_lengths() {
+        assert_eq!(days_in_month(2026, 6), 30);
+        assert_eq!(days_in_month(2026, 7), 31);
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2026, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(1900, 2), 28);
+    }
+
+    #[test]
+    fn dates_format_with_real_month_names() {
+        assert_eq!(fmt_date("2026-03-05", Lang::De), "5. Mär");
+        assert_eq!(fmt_date("2026-03-05", Lang::En), "Mar 5");
+        assert_eq!(fmt_date("2026-12-24", Lang::De), "24. Dez");
+        assert_eq!(fmt_date("not-a-date", Lang::De), "not-a-date");
+    }
 }

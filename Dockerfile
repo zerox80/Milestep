@@ -1,15 +1,27 @@
-FROM rust:1.95-bookworm AS planner
+FROM rust:1.95-bookworm AS chef
 WORKDIR /app
-RUN cargo install trunk --version 0.21.14
-COPY . .
+RUN cargo install cargo-chef --locked \
+  && cargo install trunk --version 0.21.14 \
+  && rustup target add wasm32-unknown-unknown
 
-FROM planner AS frontend-builder
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Dependencies are cooked from the recipe only, so source-only changes reuse
+# the cached dependency layers instead of rebuilding everything.
+FROM chef AS backend-builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release -p kowobau-backend --recipe-path recipe.json
+COPY . .
+RUN cargo build --release -p kowobau-backend
+
+FROM chef AS frontend-builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --target wasm32-unknown-unknown -p kowobau-frontend --recipe-path recipe.json
+COPY . .
 WORKDIR /app/crates/frontend
 RUN trunk build --release --public-url /
-
-FROM planner AS backend-builder
-WORKDIR /app
-RUN cargo build --release -p kowobau-backend
 
 FROM debian:bookworm-slim AS backend-runtime
 WORKDIR /app

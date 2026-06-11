@@ -12,11 +12,16 @@ use argon2::{
     Argon2,
 };
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    body::Body,
+    extract::{DefaultBodyLimit, Multipart, Path, Request, State},
     http::{
-        header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, SET_COOKIE},
-        HeaderMap, HeaderValue, StatusCode,
+        header::{
+            CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, HOST, ORIGIN, SET_COOKIE,
+            X_CONTENT_TYPE_OPTIONS,
+        },
+        HeaderMap, HeaderValue, Method, StatusCode,
     },
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
@@ -30,7 +35,8 @@ use serde::Serialize;
 use serde_json::json;
 use sha2::Sha256;
 use sqlx::{postgres::PgPoolOptions, FromRow, PgConnection, PgPool};
-use tokio::{fs, net::TcpListener};
+use tokio::{fs, io::AsyncWriteExt, net::TcpListener};
+use tokio_util::io::ReaderStream;
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -43,6 +49,10 @@ type HmacSha256 = Hmac<Sha256>;
 
 const COOKIE_NAME: &str = "kowobau_session";
 const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+const ALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
+    "pdf", "png", "jpg", "jpeg", "webp", "svg", "csv", "xlsx", "docx", "txt", "json", "zip", "dwg",
+    "ifc",
+];
 
 // Equalizes login timing for unknown emails so account existence cannot be inferred.
 static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
@@ -82,6 +92,8 @@ enum AppError {
     BadRequest(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    Internal(String),
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
     #[error(transparent)]
@@ -100,13 +112,18 @@ impl IntoResponse for AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::Sqlx(_) | AppError::Io(_) | AppError::Chrono(_) | AppError::Anyhow(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            AppError::Internal(_)
+            | AppError::Sqlx(_)
+            | AppError::Io(_)
+            | AppError::Chrono(_)
+            | AppError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         let message = match status {
-            StatusCode::INTERNAL_SERVER_ERROR => "internal server error".to_string(),
+            StatusCode::INTERNAL_SERVER_ERROR => {
+                tracing::error!(error = %self, "internal server error");
+                "internal server error".to_string()
+            }
             _ => self.to_string(),
         };
 
@@ -190,6 +207,8 @@ fn env_var(primary: &str, fallback: &str) -> Option<String> {
 }
 
 fn healthcheck_cli() -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+
     let bind =
         env_var("KOWOBAU_BIND", "CADENCE_BIND").unwrap_or_else(|| "127.0.0.1:8080".to_string());
     let port = bind
@@ -197,7 +216,25 @@ fn healthcheck_cli() -> anyhow::Result<()> {
         .next()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(8080);
-    TcpStream::connect(("127.0.0.1", port))?;
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(StdDuration::from_secs(5)))?;
+    stream.set_write_timeout(Some(StdDuration::from_secs(5)))?;
+    stream
+        .write_all(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")?;
+    let mut buf = Vec::with_capacity(64);
+    let mut chunk = [0u8; 64];
+    while buf.len() < 12 {
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    let head = String::from_utf8_lossy(&buf);
+    anyhow::ensure!(
+        head.starts_with("HTTP/1.1 200"),
+        "unexpected health response: {head}"
+    );
     Ok(())
 }
 
@@ -229,6 +266,7 @@ fn build_router(state: AppState) -> Router {
         .route("/workspaces/{id}/invites", post(invite_member))
         .route("/memberships/{id}", patch(update_membership))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
+        .layer(middleware::from_fn(enforce_same_origin))
         .with_state(state.clone());
 
     let index = state.cfg.static_dir.join("index.html");
@@ -239,6 +277,41 @@ fn build_router(state: AppState) -> Router {
         .fallback_service(spa)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+}
+
+/// CSRF defense-in-depth on top of SameSite=Lax: browser-sent state-changing
+/// requests must come from our own origin. Requests without an Origin header
+/// (curl, server-to-server) are allowed through.
+async fn enforce_same_origin(req: Request, next: Next) -> Result<Response, AppError> {
+    if !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        if let Some(origin) = req.headers().get(ORIGIN).and_then(|v| v.to_str().ok()) {
+            let origin_host = host_only(origin.split_once("://").map_or(origin, |(_, a)| a));
+            let request_host = req
+                .headers()
+                .get(HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(host_only)
+                .unwrap_or("");
+            if origin == "null"
+                || request_host.is_empty()
+                || !origin_host.eq_ignore_ascii_case(request_host)
+            {
+                return Err(AppError::Forbidden);
+            }
+        }
+    }
+    Ok(next.run(req).await)
+}
+
+/// Strips a `:port` suffix (and IPv6 brackets) from an authority string.
+fn host_only(authority: &str) -> &str {
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest);
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => authority,
+    }
 }
 
 async fn shutdown_signal() {
@@ -637,19 +710,20 @@ async fn move_task(
     let task_id = uuid_from_str(&id)?;
     let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
     let status_id = uuid_from_str(&payload.status_id)?;
+    let mut tx = state.db.begin().await?;
     let project_id: (Uuid,) = sqlx::query_as("SELECT project_id FROM tasks WHERE id = $1")
         .bind(task_id)
-        .fetch_one(&state.db)
+        .fetch_one(&mut *tx)
         .await?;
-    assert_status_in_project(&state.db, project_id.0, status_id).await?;
+    assert_status_in_project(&mut *tx, project_id.0, status_id).await?;
 
     sqlx::query("UPDATE tasks SET status_id = $1, updated_at = now() WHERE id = $2")
         .bind(status_id)
         .bind(task_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     record_audit(
-        &state.db,
+        &mut *tx,
         workspace_id,
         user_id,
         "moved task",
@@ -657,6 +731,7 @@ async fn move_task(
         Some(task_id),
     )
     .await?;
+    tx.commit().await?;
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -669,12 +744,13 @@ async fn delete_task(
     let user_id = uuid_from_str(&ctx.user.id)?;
     let task_id = uuid_from_str(&id)?;
     let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
+    let mut tx = state.db.begin().await?;
     sqlx::query("DELETE FROM tasks WHERE id = $1")
         .bind(task_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     record_audit(
-        &state.db,
+        &mut *tx,
         workspace_id,
         user_id,
         "deleted task",
@@ -682,6 +758,7 @@ async fn delete_task(
         Some(task_id),
     )
     .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -698,21 +775,20 @@ async fn create_subtask(
     if payload.title.trim().is_empty() {
         return Err(AppError::BadRequest("subtask title is required".into()));
     }
-    let pos: (i32,) =
-        sqlx::query_as("SELECT COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = $1")
-            .bind(task_id)
-            .fetch_one(&state.db)
-            .await?;
-    sqlx::query("INSERT INTO subtasks (id, task_id, title, position) VALUES ($1, $2, $3, $4)")
-        .bind(Uuid::new_v4())
-        .bind(task_id)
-        .bind(payload.title.trim())
-        .bind(pos.0)
-        .execute(&state.db)
-        .await?;
-    touch_task(&state.db, task_id).await?;
+    let mut tx = state.db.begin().await?;
+    // Single statement so the next position is computed atomically.
+    sqlx::query(
+        "INSERT INTO subtasks (id, task_id, title, position) \
+         SELECT $1, $2, $3, COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = $2",
+    )
+    .bind(Uuid::new_v4())
+    .bind(task_id)
+    .bind(payload.title.trim())
+    .execute(&mut *tx)
+    .await?;
+    touch_task(&mut *tx, task_id).await?;
     record_audit(
-        &state.db,
+        &mut *tx,
         workspace_id,
         user_id,
         "created subtask",
@@ -720,6 +796,7 @@ async fn create_subtask(
         Some(task_id),
     )
     .await?;
+    tx.commit().await?;
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -795,7 +872,8 @@ async fn create_comment(
     let ctx = require_auth(&state, &headers).await?;
     let user_id = uuid_from_str(&ctx.user.id)?;
     let task_id = uuid_from_str(&id)?;
-    let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
+    // Commenting is intentionally open to viewers; only read access is required.
+    let workspace_id = assert_task_read(&state.db, user_id, task_id).await?;
     if payload.body.trim().is_empty() {
         return Err(AppError::BadRequest("comment body is required".into()));
     }
@@ -837,7 +915,37 @@ async fn upload_attachment(
     let task_id = uuid_from_str(&id)?;
     let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
 
-    while let Some(field) = multipart
+    // Files written to disk so far; removed again if anything in the request fails,
+    // so a rolled-back transaction never leaves orphaned files behind.
+    let mut written_paths: Vec<PathBuf> = Vec::new();
+    let result = store_attachments(
+        &state,
+        &mut multipart,
+        task_id,
+        user_id,
+        workspace_id,
+        &mut written_paths,
+    )
+    .await;
+    if let Err(err) = result {
+        for path in &written_paths {
+            let _ = fs::remove_file(path).await;
+        }
+        return Err(err);
+    }
+    Ok(Json(fetch_task(&state.db, task_id).await?))
+}
+
+async fn store_attachments(
+    state: &AppState,
+    multipart: &mut Multipart,
+    task_id: Uuid,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    written_paths: &mut Vec<PathBuf>,
+) -> Result<(), AppError> {
+    let mut tx = state.db.begin().await?;
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?
@@ -845,17 +953,34 @@ async fn upload_attachment(
         let Some(file_name) = field.file_name().map(sanitize_file_name) else {
             continue;
         };
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?;
-        if bytes.is_empty() {
-            continue;
+        if !allowed_upload_extension(&file_name) {
+            return Err(AppError::BadRequest(format!(
+                "file type of \"{file_name}\" is not allowed"
+            )));
         }
+
         let attachment_id = Uuid::new_v4();
         let storage_name = format!("{}-{}", attachment_id, file_name);
         let storage_path = state.cfg.upload_dir.join(&storage_name);
-        fs::write(&storage_path, &bytes).await?;
+        let mut file = fs::File::create(&storage_path).await?;
+        written_paths.push(storage_path.clone());
+        let mut size_bytes: u64 = 0;
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| AppError::BadRequest(e.to_string()))?
+        {
+            size_bytes += chunk.len() as u64;
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        drop(file);
+        if size_bytes == 0 {
+            let _ = fs::remove_file(&storage_path).await;
+            written_paths.pop();
+            continue;
+        }
+
         let kind = if mime_guess::from_path(&file_name)
             .first_or_octet_stream()
             .type_()
@@ -874,16 +999,16 @@ async fn upload_attachment(
         .bind(task_id)
         .bind(&file_name)
         .bind(attachment_kind_to_db(&kind))
-        .bind(bytes.len() as i64)
+        .bind(size_bytes as i64)
         .bind(storage_path.to_string_lossy().to_string())
         .bind(user_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     }
 
-    touch_task(&state.db, task_id).await?;
+    touch_task(&mut *tx, task_id).await?;
     record_audit(
-        &state.db,
+        &mut *tx,
         workspace_id,
         user_id,
         "uploaded attachment",
@@ -891,7 +1016,8 @@ async fn upload_attachment(
         Some(task_id),
     )
     .await?;
-    Ok(Json(fetch_task(&state.db, task_id).await?))
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn download_attachment(
@@ -913,12 +1039,12 @@ async fn download_attachment(
     };
     assert_task_read(&state.db, user_id, task_id).await?;
 
-    let bytes = fs::read(&storage_path)
+    let file = fs::File::open(&storage_path)
         .await
         .map_err(|_| AppError::NotFound)?;
     let mime = mime_guess::from_path(&file_name).first_or_octet_stream();
 
-    let mut res = bytes.into_response();
+    let mut res = Body::from_stream(ReaderStream::new(file)).into_response();
     res.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_str(mime.as_ref())
@@ -930,6 +1056,8 @@ async fn download_attachment(
         HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\""))
             .map_err(|_| AppError::NotFound)?,
     );
+    res.headers_mut()
+        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     Ok(res)
 }
 
@@ -1076,12 +1204,16 @@ async fn update_membership(
     let ctx = require_auth(&state, &headers).await?;
     let user_id = uuid_from_str(&ctx.user.id)?;
     let membership_id = uuid_from_str(&id)?;
-    let row: MembershipWorkspaceRow =
-        sqlx::query_as("SELECT workspace_id, user_id, role FROM memberships WHERE id = $1")
-            .bind(membership_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let mut tx = state.db.begin().await?;
+    // FOR UPDATE serializes concurrent role changes on the same membership and
+    // keeps the last-owner check below race-free.
+    let row: MembershipWorkspaceRow = sqlx::query_as(
+        "SELECT workspace_id, user_id, role FROM memberships WHERE id = $1 FOR UPDATE",
+    )
+    .bind(membership_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let actor_role = workspace_role(&state.db, user_id, row.workspace_id)
         .await?
         .ok_or(AppError::Forbidden)?;
@@ -1094,14 +1226,14 @@ async fn update_membership(
         return Err(AppError::Forbidden);
     }
     if target_role == Role::Owner && payload.role != Role::Owner {
-        let owners: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM memberships \
-             WHERE workspace_id = $1 AND role = 'owner' AND status = 'active'",
+        let owners: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM memberships \
+             WHERE workspace_id = $1 AND role = 'owner' AND status = 'active' FOR UPDATE",
         )
         .bind(row.workspace_id)
-        .fetch_one(&state.db)
+        .fetch_all(&mut *tx)
         .await?;
-        if owners.0 <= 1 {
+        if owners.len() <= 1 {
             return Err(AppError::BadRequest(
                 "cannot demote the last owner of the workspace".into(),
             ));
@@ -1115,10 +1247,10 @@ async fn update_membership(
     sqlx::query("UPDATE memberships SET role = $1 WHERE id = $2")
         .bind(role_to_db(&payload.role))
         .bind(membership_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
     record_audit(
-        &state.db,
+        &mut *tx,
         row.workspace_id,
         user_id,
         "updated role",
@@ -1126,6 +1258,7 @@ async fn update_membership(
         Some(membership_id),
     )
     .await?;
+    tx.commit().await?;
     Ok(Json(fetch_member(&state.db, membership_id).await?))
 }
 
@@ -1178,7 +1311,7 @@ fn parse_session_cookie(headers: &HeaderMap, cfg: &AppConfig) -> Result<Uuid, Ap
 
 fn sign(cfg: &AppConfig, value: &str) -> Result<String, AppError> {
     let mut mac = HmacSha256::new_from_slice(cfg.session_secret.as_bytes())
-        .map_err(|_| AppError::BadRequest("invalid session secret".into()))?;
+        .map_err(|_| AppError::Internal("invalid session secret".into()))?;
     mac.update(value.as_bytes());
     Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
 }
@@ -1216,7 +1349,7 @@ fn hash_password(password: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     Ok(Argon2::default()
         .hash_password(password.as_bytes(), &salt)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?
         .to_string())
 }
 
@@ -1313,6 +1446,7 @@ struct StatusRow {
     name_de: String,
     name_en: String,
     position: i32,
+    is_done: bool,
     color: String,
 }
 
@@ -1324,6 +1458,7 @@ impl From<StatusRow> for StatusDto {
             name_de: row.name_de,
             name_en: row.name_en,
             position: row.position,
+            is_done: row.is_done,
             color: row.color,
         }
     }
@@ -1343,6 +1478,7 @@ struct TaskRow {
     priority: String,
     status_id: Uuid,
     status_position: i32,
+    status_is_done: bool,
     start_date: Option<NaiveDate>,
     due_date: Option<NaiveDate>,
     phase: String,
@@ -1354,6 +1490,7 @@ struct TaskRow {
 #[derive(Debug, FromRow)]
 struct SubtaskRow {
     id: Uuid,
+    task_id: Uuid,
     title: String,
     title_en: Option<String>,
     done: bool,
@@ -1501,7 +1638,7 @@ async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<BootstrapDto, App
 
 async fn fetch_statuses(db: &PgPool, project_id: Uuid) -> Result<Vec<StatusDto>, AppError> {
     let rows: Vec<StatusRow> = sqlx::query_as(
-        "SELECT id, project_id, name_de, name_en, position, color \
+        "SELECT id, project_id, name_de, name_en, position, is_done, color \
          FROM project_statuses WHERE project_id = $1 ORDER BY position",
     )
     .bind(project_id)
@@ -1520,30 +1657,28 @@ async fn fetch_members(db: &PgPool, workspace_id: Uuid) -> Result<Vec<MemberDto>
     .fetch_all(db)
     .await?;
 
+    // One aggregate query for the whole workspace instead of two counts per member.
+    let count_rows: Vec<(Uuid, i64, i64)> = sqlx::query_as(
+        "SELECT ta.user_id, \
+                COUNT(*) FILTER (WHERE NOT s.is_done), \
+                COUNT(*) FILTER (WHERE s.is_done) \
+         FROM task_assignees ta \
+         JOIN tasks t ON t.id = ta.task_id \
+         JOIN projects p ON p.id = t.project_id \
+         JOIN project_statuses s ON s.id = t.status_id \
+         WHERE p.workspace_id = $1 GROUP BY ta.user_id",
+    )
+    .bind(workspace_id)
+    .fetch_all(db)
+    .await?;
+    let counts: HashMap<Uuid, (i64, i64)> = count_rows
+        .into_iter()
+        .map(|(user_id, open, done)| (user_id, (open, done)))
+        .collect();
+
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let open_tasks: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM task_assignees ta \
-             JOIN tasks t ON t.id = ta.task_id \
-             JOIN projects p ON p.id = t.project_id \
-             JOIN project_statuses s ON s.id = t.status_id \
-             WHERE p.workspace_id = $1 AND ta.user_id = $2 AND s.position < 3",
-        )
-        .bind(workspace_id)
-        .bind(row.user_id)
-        .fetch_one(db)
-        .await?;
-        let done_tasks: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM task_assignees ta \
-             JOIN tasks t ON t.id = ta.task_id \
-             JOIN projects p ON p.id = t.project_id \
-             JOIN project_statuses s ON s.id = t.status_id \
-             WHERE p.workspace_id = $1 AND ta.user_id = $2 AND s.position = 3",
-        )
-        .bind(workspace_id)
-        .bind(row.user_id)
-        .fetch_one(db)
-        .await?;
+        let (open_tasks, done_tasks) = counts.get(&row.user_id).copied().unwrap_or((0, 0));
 
         out.push(MemberDto {
             id: row.id.to_string(),
@@ -1562,8 +1697,8 @@ async fn fetch_members(db: &PgPool, workspace_id: Uuid) -> Result<Vec<MemberDto>
                 .last_active_at
                 .map(|t| relative_label(t, "en"))
                 .unwrap_or_else(|| "never".to_string()),
-            open_tasks: open_tasks.0,
-            done_tasks: done_tasks.0,
+            open_tasks,
+            done_tasks,
         });
     }
     Ok(out)
@@ -1585,125 +1720,165 @@ async fn fetch_member(db: &PgPool, membership_id: Uuid) -> Result<MemberDto, App
         .ok_or(AppError::NotFound)
 }
 
+const TASK_SELECT: &str =
+    "SELECT t.id, t.project_id, t.key, t.title, t.title_en, t.description, t.description_en, \
+            t.tag, t.tag_color, t.priority, t.status_id, s.position AS status_position, \
+            s.is_done AS status_is_done, \
+            t.start_date, t.due_date, t.phase, t.comments_count, t.created_at, t.updated_at \
+     FROM tasks t JOIN project_statuses s ON s.id = t.status_id";
+
 async fn fetch_tasks(db: &PgPool, project_id: Uuid) -> Result<Vec<TaskDto>, AppError> {
-    let ids: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT t.id FROM tasks t JOIN project_statuses s ON s.id = t.status_id \
-         WHERE t.project_id = $1 ORDER BY s.position, t.due_date NULLS LAST, t.key",
-    )
+    let rows: Vec<TaskRow> = sqlx::query_as(&format!(
+        "{TASK_SELECT} WHERE t.project_id = $1 ORDER BY s.position, t.due_date NULLS LAST, t.key"
+    ))
     .bind(project_id)
     .fetch_all(db)
     .await?;
-
-    let mut out = Vec::with_capacity(ids.len());
-    for (id,) in ids {
-        out.push(fetch_task(db, id).await?);
-    }
-    Ok(out)
+    assemble_tasks(db, rows).await
 }
 
 async fn fetch_task(db: &PgPool, task_id: Uuid) -> Result<TaskDto, AppError> {
-    let row: TaskRow = sqlx::query_as(
-        "SELECT t.id, t.project_id, t.key, t.title, t.title_en, t.description, t.description_en, \
-                t.tag, t.tag_color, t.priority, t.status_id, s.position AS status_position, \
-                t.start_date, t.due_date, t.phase, t.comments_count, t.created_at, t.updated_at \
-         FROM tasks t JOIN project_statuses s ON s.id = t.status_id WHERE t.id = $1",
-    )
-    .bind(task_id)
-    .fetch_optional(db)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let row: TaskRow = sqlx::query_as(&format!("{TASK_SELECT} WHERE t.id = $1"))
+        .bind(task_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    assemble_tasks(db, vec![row])
+        .await?
+        .pop()
+        .ok_or(AppError::NotFound)
+}
 
-    let assignees: Vec<(Uuid,)> =
-        sqlx::query_as("SELECT user_id FROM task_assignees WHERE task_id = $1 ORDER BY user_id")
-            .bind(task_id)
-            .fetch_all(db)
-            .await?;
-    let dependencies: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT depends_on_task_id FROM task_dependencies WHERE task_id = $1 ORDER BY depends_on_task_id",
+/// Loads all task children (assignees, dependencies, subtasks, comments,
+/// attachments) with one batched query each instead of one set per task.
+async fn assemble_tasks(db: &PgPool, rows: Vec<TaskRow>) -> Result<Vec<TaskDto>, AppError> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+
+    let assignee_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT task_id, user_id FROM task_assignees WHERE task_id = ANY($1) ORDER BY user_id",
     )
-    .bind(task_id)
+    .bind(&ids)
     .fetch_all(db)
     .await?;
-    let subtasks: Vec<SubtaskRow> = sqlx::query_as(
-        "SELECT id, title, title_en, done, position FROM subtasks WHERE task_id = $1 ORDER BY position",
+    let mut assignees: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (task_id, user_id) in assignee_rows {
+        assignees
+            .entry(task_id)
+            .or_default()
+            .push(user_id.to_string());
+    }
+
+    let dependency_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT task_id, depends_on_task_id FROM task_dependencies \
+         WHERE task_id = ANY($1) ORDER BY depends_on_task_id",
     )
-    .bind(task_id)
+    .bind(&ids)
     .fetch_all(db)
     .await?;
-    let comments: Vec<CommentRow> = sqlx::query_as(
+    let mut dependencies: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (task_id, dep_id) in dependency_rows {
+        dependencies
+            .entry(task_id)
+            .or_default()
+            .push(dep_id.to_string());
+    }
+
+    let subtask_rows: Vec<SubtaskRow> = sqlx::query_as(
+        "SELECT id, task_id, title, title_en, done, position FROM subtasks \
+         WHERE task_id = ANY($1) ORDER BY position",
+    )
+    .bind(&ids)
+    .fetch_all(db)
+    .await?;
+    let mut subtasks: HashMap<Uuid, Vec<SubtaskDto>> = HashMap::new();
+    for s in subtask_rows {
+        subtasks.entry(s.task_id).or_default().push(SubtaskDto {
+            id: s.id.to_string(),
+            title: s.title,
+            title_en: s.title_en,
+            done: s.done,
+            position: s.position,
+        });
+    }
+
+    let comment_rows: Vec<CommentRow> = sqlx::query_as(
         "SELECT c.id, c.task_id, c.user_id, u.name AS author_name, c.body, c.created_at \
-         FROM comments c JOIN users u ON u.id = c.user_id WHERE c.task_id = $1 ORDER BY c.created_at DESC",
+         FROM comments c JOIN users u ON u.id = c.user_id \
+         WHERE c.task_id = ANY($1) ORDER BY c.created_at DESC",
     )
-    .bind(task_id)
+    .bind(&ids)
     .fetch_all(db)
     .await?;
-    let attachments: Vec<AttachmentRow> = sqlx::query_as(
-        "SELECT id, task_id, file_name, kind, size_bytes FROM attachments WHERE task_id = $1 ORDER BY created_at DESC",
-    )
-    .bind(task_id)
-    .fetch_all(db)
-    .await?;
+    let mut comments: HashMap<Uuid, Vec<CommentDto>> = HashMap::new();
+    for c in comment_rows {
+        comments.entry(c.task_id).or_default().push(CommentDto {
+            id: c.id.to_string(),
+            task_id: c.task_id.to_string(),
+            user_id: c.user_id.to_string(),
+            author_initials: initials(&c.author_name),
+            author_name: c.author_name,
+            body: c.body,
+            created_label_de: relative_label(c.created_at, "de"),
+            created_label_en: relative_label(c.created_at, "en"),
+        });
+    }
 
-    Ok(TaskDto {
-        id: row.id.to_string(),
-        project_id: row.project_id.to_string(),
-        key: row.key,
-        title: row.title,
-        title_en: row.title_en,
-        description: row.description,
-        description_en: row.description_en,
-        tag: row.tag,
-        tag_color: row.tag_color,
-        priority: priority_from_db(&row.priority)?,
-        status_id: row.status_id.to_string(),
-        status_position: row.status_position,
-        start_date: row.start_date.map(|d| d.to_string()),
-        due_date: row.due_date.map(|d| d.to_string()),
-        phase: row.phase,
-        assignee_ids: assignees.into_iter().map(|(id,)| id.to_string()).collect(),
-        dependency_ids: dependencies
-            .into_iter()
-            .map(|(id,)| id.to_string())
-            .collect(),
-        subtasks: subtasks
-            .into_iter()
-            .map(|s| SubtaskDto {
-                id: s.id.to_string(),
-                title: s.title,
-                title_en: s.title_en,
-                done: s.done,
-                position: s.position,
-            })
-            .collect(),
-        comments: comments
-            .into_iter()
-            .map(|c| CommentDto {
-                id: c.id.to_string(),
-                task_id: c.task_id.to_string(),
-                user_id: c.user_id.to_string(),
-                author_initials: initials(&c.author_name),
-                author_name: c.author_name,
-                body: c.body,
-                created_label_de: relative_label(c.created_at, "de"),
-                created_label_en: relative_label(c.created_at, "en"),
-            })
-            .collect(),
-        attachments: attachments
-            .into_iter()
-            .map(|a| AttachmentDto {
+    let attachment_rows: Vec<AttachmentRow> = sqlx::query_as(
+        "SELECT id, task_id, file_name, kind, size_bytes FROM attachments \
+         WHERE task_id = ANY($1) ORDER BY created_at DESC",
+    )
+    .bind(&ids)
+    .fetch_all(db)
+    .await?;
+    let mut attachments: HashMap<Uuid, Vec<AttachmentDto>> = HashMap::new();
+    for a in attachment_rows {
+        attachments
+            .entry(a.task_id)
+            .or_default()
+            .push(AttachmentDto {
                 id: a.id.to_string(),
                 task_id: a.task_id.to_string(),
                 file_name: a.file_name,
                 kind: attachment_kind_from_db(&a.kind).unwrap_or(AttachmentKind::File),
                 size_label: size_label(a.size_bytes),
+            });
+    }
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(TaskDto {
+                id: row.id.to_string(),
+                project_id: row.project_id.to_string(),
+                key: row.key,
+                title: row.title,
+                title_en: row.title_en,
+                description: row.description,
+                description_en: row.description_en,
+                tag: row.tag,
+                tag_color: row.tag_color,
+                priority: priority_from_db(&row.priority)?,
+                status_id: row.status_id.to_string(),
+                status_position: row.status_position,
+                status_is_done: row.status_is_done,
+                start_date: row.start_date.map(|d| d.to_string()),
+                due_date: row.due_date.map(|d| d.to_string()),
+                phase: row.phase,
+                assignee_ids: assignees.remove(&row.id).unwrap_or_default(),
+                dependency_ids: dependencies.remove(&row.id).unwrap_or_default(),
+                subtasks: subtasks.remove(&row.id).unwrap_or_default(),
+                comments: comments.remove(&row.id).unwrap_or_default(),
+                attachments: attachments.remove(&row.id).unwrap_or_default(),
+                comments_count: row.comments_count,
+                created_label_de: relative_label(row.created_at, "de"),
+                created_label_en: relative_label(row.created_at, "en"),
+                updated_label_de: relative_label(row.updated_at, "de"),
+                updated_label_en: relative_label(row.updated_at, "en"),
             })
-            .collect(),
-        comments_count: row.comments_count,
-        created_label_de: relative_label(row.created_at, "de"),
-        created_label_en: relative_label(row.created_at, "en"),
-        updated_label_de: relative_label(row.updated_at, "de"),
-        updated_label_en: relative_label(row.updated_at, "en"),
-    })
+        })
+        .collect()
 }
 
 async fn fetch_milestones(db: &PgPool, project_id: Uuid) -> Result<Vec<MilestoneDto>, AppError> {
@@ -1976,7 +2151,13 @@ async fn create_workspace_for_user(
 ) -> Result<Uuid, AppError> {
     let workspace_id = Uuid::new_v4();
     let project_id = Uuid::new_v4();
-    let slug = format!("{}-workspace", initials(name).to_lowercase());
+    // url_slug is UNIQUE; the workspace-id suffix keeps users with identical
+    // initials from colliding (which would 500 the whole registration).
+    let slug = format!(
+        "{}-{}",
+        initials(name).to_lowercase(),
+        &workspace_id.to_string()[..8]
+    );
 
     sqlx::query(
         "INSERT INTO workspaces (id, name, url_slug, default_lang) VALUES ($1, $2, $3, 'de')",
@@ -2062,7 +2243,7 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
         (
             fixed_uuid("20000000-0000-4000-8000-000000000007")?,
             "david@firma.com",
-            "David KÃ¶nig",
+            "David König",
             Role::Viewer,
         ),
     ];
@@ -2112,15 +2293,15 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
     }
 
     let statuses = [
-        ("Geplant", "Planned", "#8c867b"),
-        ("In Arbeit", "In progress", "#6b8aa6"),
-        ("Review", "Review", "#c98a3a"),
-        ("Fertig", "Done", "#5f8d6a"),
+        ("Geplant", "Planned", "#8c867b", false),
+        ("In Arbeit", "In progress", "#6b8aa6", false),
+        ("Review", "Review", "#c98a3a", false),
+        ("Fertig", "Done", "#5f8d6a", true),
     ];
-    for (idx, (de, en, color)) in statuses.into_iter().enumerate() {
+    for (idx, (de, en, color, is_done)) in statuses.into_iter().enumerate() {
         sqlx::query(
-            "INSERT INTO project_statuses (id, project_id, name_de, name_en, position, color) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO project_statuses (id, project_id, name_de, name_en, position, color, is_done) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(status_ids[idx])
         .bind(project_id)
@@ -2128,10 +2309,12 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
         .bind(en)
         .bind(idx as i32)
         .bind(color)
+        .bind(is_done)
         .execute(db)
         .await?;
     }
 
+    let today = Utc::now().date_naive();
     let tasks = seed_tasks(project_id, status_ids);
     let mut task_ids = HashMap::new();
     for task in &tasks {
@@ -2152,8 +2335,8 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
         .bind(task.tag_color)
         .bind(priority_to_db(&task.priority))
         .bind(task.status_id)
-        .bind(NaiveDate::parse_from_str(task.start, "%Y-%m-%d")?)
-        .bind(NaiveDate::parse_from_str(task.due, "%Y-%m-%d")?)
+        .bind(today + Duration::days(task.start_offset))
+        .bind(today + Duration::days(task.due_offset))
         .bind(task.phase)
         .bind(people_by_initial(task.assignees[0])?)
         .bind(task.comments_count)
@@ -2204,17 +2387,17 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
         (
             "KWB-104",
             "TL",
-            "Fotodokumentation ist vollstÃ¤ndig, die offenen Punkte sind markiert.",
+            "Fotodokumentation ist vollständig, die offenen Punkte sind markiert.",
         ),
         (
             "KWB-104",
             "JS",
-            "Bitte die Nachfrist fÃ¼r Elektro mit der Bauleitung abstimmen.",
+            "Bitte die Nachfrist für Elektro mit der Bauleitung abstimmen.",
         ),
         (
             "KWB-107",
             "MR",
-            "Der Terminplan enthÃ¤lt jetzt die neuen Lieferzeiten fÃ¼r Fenster.",
+            "Der Terminplan enthält jetzt die neuen Lieferzeiten für Fenster.",
         ),
         ("KWB-101", "JS", "Die Brandschutzfreigabe ist abgelegt."),
     ];
@@ -2237,29 +2420,23 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
     seed_attachment(db, task_ids["KWB-108"], "abnahme-checkliste.csv", 4_000).await?;
 
     let milestones = [
-        (
-            "Planungsfreigabe",
-            "Planning approval",
-            "2026-06-05",
-            true,
-            "planung",
-        ),
+        ("Planungsfreigabe", "Planning approval", -6, true, "planung"),
         (
             "Gewerke koordiniert",
             "Trades coordinated",
-            "2026-06-12",
+            1,
             false,
             "ausfuehrung",
         ),
         (
             "Abnahme Bauabschnitt A",
             "Construction phase A handover",
-            "2026-06-18",
+            7,
             false,
             "abnahme",
         ),
     ];
-    for (title, title_en, due, done, phase) in milestones {
+    for (title, title_en, due_offset, done, phase) in milestones {
         sqlx::query(
             "INSERT INTO milestones (id, project_id, title, title_en, due_date, done, phase) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
@@ -2267,7 +2444,7 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
         .bind(project_id)
         .bind(title)
         .bind(title_en)
-        .bind(NaiveDate::parse_from_str(due, "%Y-%m-%d")?)
+        .bind(today + Duration::days(due_offset))
         .bind(done)
         .bind(phase)
         .execute(db)
@@ -2289,7 +2466,7 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
             NotificationKind::Mention,
             Some("MR"),
             Some("KWB-107"),
-            Some("hat dich in einem Kommentar erwÃ¤hnt"),
+            Some("hat dich in einem Kommentar erwähnt"),
             Some("mentioned you in a comment"),
             true,
             "25 minutes",
@@ -2298,7 +2475,7 @@ async fn seed_demo(db: &PgPool) -> Result<(), AppError> {
             NotificationKind::Due,
             None,
             Some("KWB-104"),
-            Some("ist heute fÃ¤llig"),
+            Some("ist heute fällig"),
             Some("is due today"),
             true,
             "1 hour",
@@ -2370,18 +2547,18 @@ async fn insert_default_statuses(
     conn: &mut PgConnection,
     project_id: Uuid,
 ) -> Result<(), AppError> {
-    for (idx, (de, en, color)) in [
-        ("Geplant", "Planned", "#8c867b"),
-        ("In Arbeit", "In progress", "#6b8aa6"),
-        ("Review", "Review", "#c98a3a"),
-        ("Fertig", "Done", "#5f8d6a"),
+    for (idx, (de, en, color, is_done)) in [
+        ("Geplant", "Planned", "#8c867b", false),
+        ("In Arbeit", "In progress", "#6b8aa6", false),
+        ("Review", "Review", "#c98a3a", false),
+        ("Fertig", "Done", "#5f8d6a", true),
     ]
     .into_iter()
     .enumerate()
     {
         sqlx::query(
-            "INSERT INTO project_statuses (id, project_id, name_de, name_en, position, color) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO project_statuses (id, project_id, name_de, name_en, position, color, is_done) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(Uuid::new_v4())
         .bind(project_id)
@@ -2389,6 +2566,7 @@ async fn insert_default_statuses(
         .bind(en)
         .bind(idx as i32)
         .bind(color)
+        .bind(is_done)
         .execute(&mut *conn)
         .await?;
     }
@@ -2432,8 +2610,9 @@ struct SeedTask {
     tag_color: &'static str,
     priority: Priority,
     status_id: Uuid,
-    start: &'static str,
-    due: &'static str,
+    // Days relative to "today" so the demo always shows live-looking data.
+    start_offset: i64,
+    due_offset: i64,
     phase: &'static str,
     assignees: &'static [&'static str],
     subtasks: &'static [(&'static str, &'static str, bool)],
@@ -2446,24 +2625,24 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
         SeedTask {
             id: fixed_uuid("30000000-0000-4000-8000-000000000104").unwrap(),
             key: "KWB-104",
-            title: "MÃ¤ngelaufnahme koordinieren",
+            title: "Mängelaufnahme koordinieren",
             title_en: "Coordinate defect walk-through",
-            description: "Begehung fÃ¼r die WohnungseingÃ¤nge A-C koordinieren, Fotos sichern und Nachfristen mit den Gewerken abstimmen.",
+            description: "Begehung für die Wohnungseingänge A-C koordinieren, Fotos sichern und Nachfristen mit den Gewerken abstimmen.",
             description_en: "Coordinate the walk-through for entrances A-C, capture photos and align remediation deadlines with the trades.",
-            tag: "AusfÃ¼hrung",
+            tag: "Ausführung",
             tag_color: "accent",
             priority: Priority::Urgent,
             status_id: status_ids[1],
-            start: "2026-06-09",
-            due: "2026-06-11",
+            start_offset: -2,
+            due_offset: 0,
             phase: "ausfuehrung",
             assignees: &["TL", "JS"],
             subtasks: &[
-                ("Begehungstermin bestÃ¤tigen", "Confirm walk-through appointment", true),
+                ("Begehungstermin bestätigen", "Confirm walk-through appointment", true),
                 ("Fotodokumentation anlegen", "Create photo documentation", true),
-                ("MÃ¤ngelliste mit Gewerken abstimmen", "Align defect list with trades", true),
-                ("Nachfrist fÃ¼r offene Punkte setzen", "Set deadline for open items", true),
-                ("RÃ¼ckmeldung an Bauleitung senden", "Send update to site management", false),
+                ("Mängelliste mit Gewerken abstimmen", "Align defect list with trades", true),
+                ("Nachfrist für offene Punkte setzen", "Set deadline for open items", true),
+                ("Rückmeldung an Bauleitung senden", "Send update to site management", false),
                 ("Abnahme-Nachtermin planen", "Plan follow-up handover", false),
             ],
             comments_count: 4,
@@ -2473,20 +2652,20 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
             key: "KWB-107",
             title: "Terminplan aktualisieren",
             title_en: "Update construction schedule",
-            description: "Bauzeitenplan mit neuen Lieferterminen, Pufferzeiten und AbhÃ¤ngigkeiten fÃ¼r Ausbau und Fassade aktualisieren.",
+            description: "Bauzeitenplan mit neuen Lieferterminen, Pufferzeiten und Abhängigkeiten für Ausbau und Fassade aktualisieren.",
             description_en: "Update the construction schedule with new delivery dates, buffers and dependencies for interiors and facade work.",
             tag: "Planung",
             tag_color: "good",
             priority: Priority::High,
             status_id: status_ids[1],
-            start: "2026-06-10",
-            due: "2026-06-13",
+            start_offset: -1,
+            due_offset: 2,
             phase: "planung",
             assignees: &["MR", "AK"],
             subtasks: &[
                 ("Liefertermine einarbeiten", "Add delivery dates", true),
-                ("Kritischen Pfad prÃ¼fen", "Review critical path", true),
-                ("Puffer fÃ¼r Fassade setzen", "Set facade buffer", false),
+                ("Kritischen Pfad prüfen", "Review critical path", true),
+                ("Puffer für Fassade setzen", "Set facade buffer", false),
                 ("Plan an Team verteilen", "Share schedule with team", false),
             ],
             comments_count: 2,
@@ -2496,17 +2675,17 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
             key: "KWB-101",
             title: "Freigabe Brandschutzkonzept",
             title_en: "Approve fire-safety concept",
-            description: "Brandschutznachweise prÃ¼fen, RÃ¼ckfragen klÃ¤ren und die Freigabe im Projektordner ablegen.",
+            description: "Brandschutznachweise prüfen, Rückfragen klären und die Freigabe im Projektordner ablegen.",
             description_en: "Review fire-safety evidence, resolve questions and file the approval in the project folder.",
             tag: "Planung",
             tag_color: "accent",
             priority: Priority::High,
             status_id: status_ids[3],
-            start: "2026-06-03",
-            due: "2026-06-08",
+            start_offset: -8,
+            due_offset: -3,
             phase: "planung",
             assignees: &["JS"],
-            subtasks: &[("Nachweise prÃ¼fen", "Review evidence", true), ("RÃ¼ckfragen klÃ¤ren", "Resolve questions", true), ("Freigabe ablegen", "File approval", true)],
+            subtasks: &[("Nachweise prüfen", "Review evidence", true), ("Rückfragen klären", "Resolve questions", true), ("Freigabe ablegen", "File approval", true)],
             comments_count: 6,
         },
         SeedTask {
@@ -2514,17 +2693,17 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
             key: "KWB-102",
             title: "Bemusterung Wohnungen",
             title_en: "Apartment sample selection",
-            description: "Materialvarianten fÃ¼r Boden, Bad und TÃ¼ren final abstimmen und im Musterkatalog dokumentieren.",
+            description: "Materialvarianten für Boden, Bad und Türen final abstimmen und im Musterkatalog dokumentieren.",
             description_en: "Finalize material variants for flooring, bathrooms and doors and document them in the sample catalog.",
             tag: "Bemusterung",
             tag_color: "cool",
             priority: Priority::Medium,
             status_id: status_ids[3],
-            start: "2026-06-01",
-            due: "2026-06-05",
+            start_offset: -10,
+            due_offset: -6,
             phase: "planung",
             assignees: &["AK"],
-            subtasks: &[("Bodenbelag festlegen", "Select flooring", true), ("Badserie freigeben", "Approve bathroom series", true), ("TÃ¼rliste exportieren", "Export door list", true)],
+            subtasks: &[("Bodenbelag festlegen", "Select flooring", true), ("Badserie freigeben", "Approve bathroom series", true), ("Türliste exportieren", "Export door list", true)],
             comments_count: 1,
         },
         SeedTask {
@@ -2532,17 +2711,17 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
             key: "KWB-103",
             title: "Mieterinformation vorbereiten",
             title_en: "Prepare tenant communication",
-            description: "Aushang, Terminfenster und Ansprechpartner fÃ¼r die Modernisierungsarbeiten abstimmen.",
+            description: "Aushang, Terminfenster und Ansprechpartner für die Modernisierungsarbeiten abstimmen.",
             description_en: "Align notices, appointment windows and contacts for the modernization work.",
             tag: "Kommunikation",
             tag_color: "cool",
             priority: Priority::Medium,
             status_id: status_ids[1],
-            start: "2026-06-08",
-            due: "2026-06-12",
+            start_offset: -3,
+            due_offset: 1,
             phase: "planung",
             assignees: &["AK", "MR"],
-            subtasks: &[("Aushang entwerfen", "Draft notice", true), ("Terminfenster prÃ¼fen", "Check appointment windows", false), ("Ansprechpartner ergÃ¤nzen", "Add contacts", false), ("Freigabe Verwaltung", "Administration approval", false), ("Verteilung planen", "Plan distribution", false)],
+            subtasks: &[("Aushang entwerfen", "Draft notice", true), ("Terminfenster prüfen", "Check appointment windows", false), ("Ansprechpartner ergänzen", "Add contacts", false), ("Freigabe Verwaltung", "Administration approval", false), ("Verteilung planen", "Plan distribution", false)],
             comments_count: 3,
         },
         SeedTask {
@@ -2550,35 +2729,35 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
             key: "KWB-105",
             title: "Gewerkefreigabe dokumentieren",
             title_en: "Document trade approvals",
-            description: "Freigaben fÃ¼r Elektro, SanitÃ¤r und Trockenbau inklusive PrÃ¼fnachweise im Projektraum ablegen.",
+            description: "Freigaben für Elektro, Sanitär und Trockenbau inklusive Prüfnachweise im Projektraum ablegen.",
             description_en: "File approvals for electrical, plumbing and drywall work, including verification documents, in the project room.",
             tag: "Vergabe",
             tag_color: "ink",
             priority: Priority::Low,
             status_id: status_ids[0],
-            start: "2026-06-12",
-            due: "2026-06-14",
+            start_offset: 1,
+            due_offset: 3,
             phase: "vergabe",
             assignees: &["JS"],
-            subtasks: &[("Elektrofreigabe ablegen", "File electrical approval", false), ("SanitÃ¤rfreigabe ablegen", "File plumbing approval", false), ("Trockenbau-Nachweis ergÃ¤nzen", "Add drywall evidence", false)],
+            subtasks: &[("Elektrofreigabe ablegen", "File electrical approval", false), ("Sanitärfreigabe ablegen", "File plumbing approval", false), ("Trockenbau-Nachweis ergänzen", "Add drywall evidence", false)],
             comments_count: 0,
         },
         SeedTask {
             id: fixed_uuid("30000000-0000-4000-8000-000000000106").unwrap(),
             key: "KWB-106",
-            title: "Abnahmeprotokoll prÃ¼fen",
+            title: "Abnahmeprotokoll prüfen",
             title_en: "Review handover protocol",
-            description: "Protokoll fÃ¼r Bauabschnitt A gegen Fotodokumentation, Restarbeiten und Unterschriften prÃ¼fen.",
+            description: "Protokoll für Bauabschnitt A gegen Fotodokumentation, Restarbeiten und Unterschriften prüfen.",
             description_en: "Check the phase A handover protocol against photos, remaining work and signatures.",
             tag: "Abnahme",
             tag_color: "good",
             priority: Priority::High,
             status_id: status_ids[2],
-            start: "2026-06-08",
-            due: "2026-06-10",
+            start_offset: -3,
+            due_offset: -1,
             phase: "abnahme",
             assignees: &["MR"],
-            subtasks: &[("Fotos abgleichen", "Compare photos", true), ("Unterschriften prÃ¼fen", "Check signatures", true), ("Restarbeiten markieren", "Mark remaining work", false)],
+            subtasks: &[("Fotos abgleichen", "Compare photos", true), ("Unterschriften prüfen", "Check signatures", true), ("Restarbeiten markieren", "Mark remaining work", false)],
             comments_count: 2,
         },
         SeedTask {
@@ -2586,17 +2765,17 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
             key: "KWB-108",
             title: "Restarbeiten kontrollieren",
             title_en: "Check remaining work",
-            description: "Offene Punkte aus der Abnahme in Treppenhaus und Keller prÃ¼fen und Status aktualisieren.",
+            description: "Offene Punkte aus der Abnahme in Treppenhaus und Keller prüfen und Status aktualisieren.",
             description_en: "Check open handover items in the stairwell and basement and update their status.",
             tag: "QA",
             tag_color: "cool",
             priority: Priority::Medium,
             status_id: status_ids[2],
-            start: "2026-06-11",
-            due: "2026-06-12",
+            start_offset: 0,
+            due_offset: 1,
             phase: "abnahme",
             assignees: &["SB"],
-            subtasks: &[("Treppenhaus prÃ¼fen", "Check stairwell", true), ("Keller prÃ¼fen", "Check basement", true), ("Status im Protokoll setzen", "Update protocol status", false)],
+            subtasks: &[("Treppenhaus prüfen", "Check stairwell", true), ("Keller prüfen", "Check basement", true), ("Status im Protokoll setzen", "Update protocol status", false)],
             comments_count: 1,
         },
         SeedTask {
@@ -2604,17 +2783,17 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
             key: "KWB-109",
             title: "Baustellenbericht erstellen",
             title_en: "Create site report",
-            description: "Wochenbericht mit Wetter, Fortschritt, Risiken und Fotos fÃ¼r EigentÃ¼mer und Verwaltung erstellen.",
+            description: "Wochenbericht mit Wetter, Fortschritt, Risiken und Fotos für Eigentümer und Verwaltung erstellen.",
             description_en: "Create the weekly report with weather, progress, risks and photos for owners and administration.",
             tag: "Bericht",
             tag_color: "ink",
             priority: Priority::Low,
             status_id: status_ids[3],
-            start: "2026-06-05",
-            due: "2026-06-07",
+            start_offset: -6,
+            due_offset: -4,
             phase: "ausfuehrung",
             assignees: &["DK"],
-            subtasks: &[("Fotoliste ergÃ¤nzen", "Add photo list", true), ("Risiken aktualisieren", "Update risks", true)],
+            subtasks: &[("Fotoliste ergänzen", "Add photo list", true), ("Risiken aktualisieren", "Update risks", true)],
             comments_count: 0,
         },
         SeedTask {
@@ -2622,17 +2801,17 @@ fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
             key: "KWB-110",
             title: "Bauabschnitt B vorbereiten",
             title_en: "Prepare construction phase B",
-            description: "Baulogistik, Materialabruf, Sicherheitsunterweisung und Kommunikationsplan fÃ¼r Bauabschnitt B vorbereiten.",
+            description: "Baulogistik, Materialabruf, Sicherheitsunterweisung und Kommunikationsplan für Bauabschnitt B vorbereiten.",
             description_en: "Prepare site logistics, material call-offs, safety briefing and communication plan for construction phase B.",
             tag: "Meilenstein",
             tag_color: "accent",
             priority: Priority::Urgent,
             status_id: status_ids[0],
-            start: "2026-06-15",
-            due: "2026-06-18",
+            start_offset: 4,
+            due_offset: 7,
             phase: "ausfuehrung",
             assignees: &["AL", "JS"],
-            subtasks: &[("Materialabruf prÃ¼fen", "Check material call-offs", false), ("LogistikflÃ¤che reservieren", "Reserve logistics area", false), ("Sicherheitsunterweisung planen", "Schedule safety briefing", false), ("Mieterinformation versenden", "Send tenant notice", false)],
+            subtasks: &[("Materialabruf prüfen", "Check material call-offs", false), ("Logistikfläche reservieren", "Reserve logistics area", false), ("Sicherheitsunterweisung planen", "Schedule safety briefing", false), ("Mieterinformation versenden", "Send tenant notice", false)],
             comments_count: 1,
         },
     ]
@@ -2818,6 +2997,14 @@ fn size_label(bytes: i64) -> String {
     }
 }
 
+fn allowed_upload_extension(file_name: &str) -> bool {
+    FsPath::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| ALLOWED_UPLOAD_EXTENSIONS.contains(&e.as_str()))
+}
+
 fn sanitize_file_name(name: &str) -> String {
     FsPath::new(name)
         .file_name()
@@ -2853,6 +3040,24 @@ mod tests {
     #[test]
     fn file_names_are_sanitized() {
         assert_eq!(sanitize_file_name("../bad name.pdf"), "bad_name.pdf");
+    }
+
+    #[test]
+    fn upload_extensions_are_allowlisted() {
+        assert!(allowed_upload_extension("plan.pdf"));
+        assert!(allowed_upload_extension("PHOTO.JPG"));
+        assert!(allowed_upload_extension("modell.ifc"));
+        assert!(!allowed_upload_extension("malware.exe"));
+        assert!(!allowed_upload_extension("seite.html"));
+        assert!(!allowed_upload_extension("noextension"));
+    }
+
+    #[test]
+    fn host_only_strips_ports_and_brackets() {
+        assert_eq!(host_only("example.com"), "example.com");
+        assert_eq!(host_only("example.com:8080"), "example.com");
+        assert_eq!(host_only("[::1]:8080"), "::1");
+        assert_eq!(host_only("127.0.0.1:80"), "127.0.0.1");
     }
 
     #[test]

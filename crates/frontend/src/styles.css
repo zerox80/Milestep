@@ -1,3 +1,16 @@
+/* Self-hosted fonts (no Google Fonts CDN: offline-capable and GDPR-safe). */
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/space-grotesk-v22-latin-regular.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/space-grotesk-v22-latin-500.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/space-grotesk-v22-latin-600.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/space-grotesk-v22-latin-700.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-regular.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-500.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-600.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-700.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 800; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-800.woff2") format("woff2"); }
+@font-face { font-family: "Space Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/space-mono-v17-latin-regular.woff2") format("woff2"); }
+@font-face { font-family: "Space Mono"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/space-mono-v17-latin-700.woff2") format("woff2"); }
+
 :root {
   --bg: #f7f4ee;
   --surface: #ffffff;
@@ -168,6 +181,8 @@ p { margin: 0; }
 .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); gap: 10px; }
 .day-cell { min-height: 112px; background: var(--surface); border-radius: 12px; box-shadow: 0 0 0 1px var(--line); padding: 10px; display: grid; gap: 7px; align-content: start; }
 .day-cell strong { color: var(--ink-3); font: 700 12px var(--font-mono); }
+.day-cell.today { box-shadow: 0 0 0 2px var(--accent); }
+.day-cell.today strong { color: var(--accent); }
 .cal-chip { width: 100%; text-align: left; border-radius: 8px; background: var(--accent-soft); color: var(--accent-press); padding: 6px 8px; font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gantt-panel { overflow-x: auto; }
 .gantt-scale { display: grid; grid-template-columns: repeat(18, 44px); color: var(--ink-3); font: 700 11px var(--font-mono); margin-left: 70px; }
