@@ -319,6 +319,10 @@ fn build_router(state: AppState) -> Router {
         .route("/tasks", get(list_tasks).post(create_task))
         .route("/tickets", get(list_tickets).post(create_ticket))
         .route(
+            "/tickets/{id}",
+            get(get_ticket).patch(update_ticket).delete(delete_ticket),
+        )
+        .route(
             "/tasks/{id}",
             get(get_task).patch(update_task).delete(delete_task),
         )
@@ -725,6 +729,17 @@ async fn get_task(
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
+async fn get_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<TicketDto>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let ticket_id = uuid_from_str(&id)?;
+    assert_ticket_read(&state.db, uuid_from_str(&ctx.user.id)?, ticket_id).await?;
+    Ok(Json(fetch_ticket(&state.db, ticket_id).await?))
+}
+
 async fn create_task(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -883,6 +898,93 @@ async fn create_ticket(
         workspace_id,
         user_id,
         "created ticket",
+        "ticket",
+        Some(ticket_id),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(fetch_ticket(&state.db, ticket_id).await?))
+}
+
+async fn update_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateTicketRequest>,
+) -> Result<Json<TicketDto>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let user_id = uuid_from_str(&ctx.user.id)?;
+    let ticket_id = uuid_from_str(&id)?;
+    let workspace_id = assert_ticket_edit(&state.db, user_id, ticket_id).await?;
+
+    if let Some(title) = &payload.title {
+        if title.trim().is_empty() {
+            return Err(AppError::BadRequest("ticket title is required".into()));
+        }
+    }
+
+    let mut tx = state.db.begin().await?;
+    if let Some(title) = payload.title {
+        sqlx::query("UPDATE tickets SET title = $1, updated_at = now() WHERE id = $2")
+            .bind(title.trim())
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(description) = payload.description {
+        sqlx::query("UPDATE tickets SET description = $1, updated_at = now() WHERE id = $2")
+            .bind(description.trim())
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(status) = payload.status {
+        sqlx::query("UPDATE tickets SET status = $1, updated_at = now() WHERE id = $2")
+            .bind(ticket_status_to_db(&status))
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(priority) = payload.priority {
+        sqlx::query("UPDATE tickets SET priority = $1, updated_at = now() WHERE id = $2")
+            .bind(priority_to_db(&priority))
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(requester_name) = payload.requester_name {
+        sqlx::query("UPDATE tickets SET requester_name = $1, updated_at = now() WHERE id = $2")
+            .bind(requester_name.trim())
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(assignee_id) = payload.assignee_id {
+        let assignee_id = assignee_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(uuid_from_str)
+            .transpose()?;
+        if let Some(assignee_id) = assignee_id {
+            let (project_id,): (Uuid,) =
+                sqlx::query_as("SELECT project_id FROM tickets WHERE id = $1")
+                    .bind(ticket_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            assert_user_in_project(&mut *tx, project_id, assignee_id).await?;
+        }
+        sqlx::query("UPDATE tickets SET assignee_id = $1, updated_at = now() WHERE id = $2")
+            .bind(assignee_id)
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    record_audit(
+        &mut *tx,
+        workspace_id,
+        user_id,
+        "updated ticket",
         "ticket",
         Some(ticket_id),
     )
@@ -1064,6 +1166,33 @@ async fn delete_task(
             tracing::warn!(%path, %err, "could not remove attachment file of deleted task");
         }
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let user_id = uuid_from_str(&ctx.user.id)?;
+    let ticket_id = uuid_from_str(&id)?;
+    let workspace_id = assert_ticket_edit(&state.db, user_id, ticket_id).await?;
+    let mut tx = state.db.begin().await?;
+    sqlx::query("DELETE FROM tickets WHERE id = $1")
+        .bind(ticket_id)
+        .execute(&mut *tx)
+        .await?;
+    record_audit(
+        &mut *tx,
+        workspace_id,
+        user_id,
+        "deleted ticket",
+        "ticket",
+        Some(ticket_id),
+    )
+    .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2756,6 +2885,40 @@ async fn assert_task_read(db: &PgPool, user_id: Uuid, task_id: Uuid) -> Result<U
 
 async fn assert_task_edit(db: &PgPool, user_id: Uuid, task_id: Uuid) -> Result<Uuid, AppError> {
     let (workspace_id, role) = task_access(db, user_id, task_id).await?;
+    if !role.can_edit() {
+        return Err(AppError::Forbidden);
+    }
+    Ok(workspace_id)
+}
+
+async fn ticket_access(
+    db: &PgPool,
+    user_id: Uuid,
+    ticket_id: Uuid,
+) -> Result<(Uuid, Role), AppError> {
+    let row: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT p.workspace_id, m.role \
+         FROM tickets t JOIN projects p ON p.id = t.project_id \
+         JOIN memberships m ON m.workspace_id = p.workspace_id \
+         WHERE t.id = $1 AND m.user_id = $2 AND m.status = 'active'",
+    )
+    .bind(ticket_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    let Some((workspace_id, role)) = row else {
+        return Err(AppError::Forbidden);
+    };
+    Ok((workspace_id, role_from_db(&role)?))
+}
+
+async fn assert_ticket_read(db: &PgPool, user_id: Uuid, ticket_id: Uuid) -> Result<Uuid, AppError> {
+    let (workspace_id, _) = ticket_access(db, user_id, ticket_id).await?;
+    Ok(workspace_id)
+}
+
+async fn assert_ticket_edit(db: &PgPool, user_id: Uuid, ticket_id: Uuid) -> Result<Uuid, AppError> {
+    let (workspace_id, role) = ticket_access(db, user_id, ticket_id).await?;
     if !role.can_edit() {
         return Err(AppError::Forbidden);
     }

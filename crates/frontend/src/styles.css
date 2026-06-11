@@ -79,7 +79,7 @@ p { margin: 0; }
 .auth-card { background: var(--surface); border-radius: 16px; padding: 28px; box-shadow: 0 24px 80px -60px rgba(0,0,0,.45), 0 0 0 1px var(--line); display: grid; gap: 16px; }
 .auth-card-head p { color: var(--ink-2); margin-top: 8px; }
 .field { display: grid; gap: 7px; font-weight: 700; color: var(--ink-2); }
-.field input, .auth-card input, .create-modal input, .create-modal textarea, .create-modal select, .comment-box input {
+.field input, .auth-card input, .create-modal input, .create-modal textarea, .create-modal select, .comment-box input, .task-drawer input, .task-drawer textarea, .task-drawer select {
   border: 0; outline: 0; border-radius: 10px; background: var(--surface-2); padding: 11px 12px; box-shadow: inset 0 0 0 1px var(--line);
 }
 .lang-toggle { display: inline-flex; padding: 3px; border-radius: 999px; background: rgba(0,0,0,.055); box-shadow: inset 0 0 0 1px var(--line); }
@@ -180,7 +180,8 @@ p { margin: 0; }
 .ticket-grid { display: grid; gap: 18px; }
 .ticket-head, .ticket-row { display: grid; grid-template-columns: minmax(220px, 2fr) 1fr 1fr 1fr 1fr 1fr; gap: 12px; align-items: center; width: 100%; }
 .ticket-head { color: var(--ink-3); font: 700 11px var(--font-mono); text-transform: uppercase; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-.ticket-row { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.ticket-row { padding: 14px 0; border-bottom: 1px solid var(--line); text-align: left; }
+.ticket-row:hover { color: var(--accent-press); }
 .ticket-row strong, .ticket-row small, .ticket-row em { display: block; }
 .ticket-row strong { line-height: 1.25; }
 .ticket-row small { color: var(--ink-3); font: 700 11px var(--font-mono); }
@@ -250,19 +251,29 @@ p { margin: 0; }
 .create-modal .title-input { width: 100%; font: 700 20px var(--font-display); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); padding: 13px 14px; }
 .create-modal textarea { width: 100%; min-height: 88px; resize: vertical; }
 .modal-error { margin: -4px 22px 14px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); color: var(--accent-press); font-weight: 800; }
+.modal-error.inline { margin: 0; flex: 1 1 100%; }
 .modal-meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 0 22px 18px; }
 .ticket-meta { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .create-modal footer { border-top: 1px solid var(--line); border-bottom: 0; justify-content: end; background: var(--surface-2); }
+.danger-action { margin-right: auto; }
 .drawer-backdrop { z-index: 65; }
 .task-drawer { position: fixed; z-index: 75; right: 0; top: 0; bottom: 0; width: min(640px, 100vw); background: var(--surface); box-shadow: -18px 0 80px -50px rgba(0,0,0,.5); overflow: auto; }
 .task-drawer header { display: flex; align-items: center; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--line); color: var(--ink-3); font: 700 12px var(--font-mono); }
 .task-drawer header b { color: var(--ink); background: var(--surface-2); border-radius: 999px; padding: 6px 10px; }
-.task-drawer header button { margin-left: auto; font-size: 24px; }
+.task-drawer header button { font-size: 13px; }
+.drawer-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.drawer-actions .drawer-close { color: var(--ink-3); font-size: 24px; line-height: 1; }
+.compact-select { width: auto; max-width: 190px; padding: 7px 10px; font: 700 12px var(--font-mono); }
 .task-drawer h2 { padding: 26px 24px 12px; font-size: 30px; }
+.drawer-field { display: grid; gap: 7px; margin: 0 24px 14px; }
+.drawer-field span { color: var(--ink-3); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.task-drawer .title-input { width: 100%; font: 700 24px var(--font-display); }
 .detail-meta { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; padding: 0 24px 22px; border-bottom: 1px solid var(--line); }
 .detail-meta span { display: grid; gap: 6px; color: var(--ink); }
 .detail-meta small { color: var(--ink-3); font-weight: 700; }
 .task-drawer section { padding: 20px 24px; border-bottom: 1px solid var(--line); }
+.drawer-edit-actions { display: flex; justify-content: end; align-items: center; flex-wrap: wrap; gap: 10px; background: var(--surface-2); }
+.drawer-textarea { width: 100%; min-height: 120px; resize: vertical; }
 .task-drawer section h3 { color: var(--ink-3); font: 700 12px var(--font-mono); text-transform: uppercase; letter-spacing: .12em; margin-bottom: 12px; }
 .subtask { display: flex; gap: 10px; align-items: center; padding: 9px 0; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }

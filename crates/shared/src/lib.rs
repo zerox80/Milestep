@@ -315,6 +315,17 @@ pub struct CreateTicketRequest {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateTicketRequest {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub status: Option<TicketStatus>,
+    pub priority: Option<Priority>,
+    pub requester_name: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub assignee_id: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateTaskRequest {
     pub title: Option<String>,
     pub description: Option<String>,

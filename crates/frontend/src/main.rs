@@ -74,6 +74,7 @@ fn AppRoot() -> impl IntoView {
     let (nav, set_nav) = create_signal(NavView::Overview);
     let (board_mode, set_board_mode) = create_signal("board".to_string());
     let (open_task, set_open_task) = create_signal::<Option<String>>(None);
+    let (open_ticket, set_open_ticket) = create_signal::<Option<String>>(None);
     let (show_create, set_show_create) = create_signal(false);
     let (show_create_ticket, set_show_create_ticket) = create_signal(false);
     let (show_notifications, set_show_notifications) = create_signal(false);
@@ -122,6 +123,8 @@ fn AppRoot() -> impl IntoView {
                     set_board_mode,
                     open_task,
                     set_open_task,
+                    open_ticket,
+                    set_open_ticket,
                     show_create,
                     set_show_create,
                     show_create_ticket,
@@ -351,6 +354,8 @@ fn dashboard(
     set_board_mode: WriteSignal<String>,
     open_task: ReadSignal<Option<String>>,
     set_open_task: WriteSignal<Option<String>>,
+    open_ticket: ReadSignal<Option<String>>,
+    set_open_ticket: WriteSignal<Option<String>>,
     show_create: ReadSignal<bool>,
     set_show_create: WriteSignal<bool>,
     show_create_ticket: ReadSignal<bool>,
@@ -367,6 +372,7 @@ fn dashboard(
     let subtitle = header_subtitle(&boot, nav.get(), lang.get());
     let boot_for_main = boot.clone();
     let boot_for_open = boot.clone();
+    let boot_for_ticket_open = boot.clone();
     let boot_for_notifications = boot.clone();
     let boot_for_create = boot.clone();
     let boot_for_ticket_create = boot.clone();
@@ -473,6 +479,7 @@ fn dashboard(
                         set_drag_task,
                         set_show_create,
                         set_show_create_ticket,
+                        set_open_ticket,
                         set_data,
                         set_error,
                     )}
@@ -493,6 +500,10 @@ fn dashboard(
 
             {move || open_task.get().and_then(|id| boot_for_open.tasks.iter().find(|t| t.id == id).cloned()).map(|task| {
                 task_detail(task, boot_for_open.clone(), lang, set_open_task, set_data, set_error)
+            })}
+
+            {move || open_ticket.get().and_then(|id| boot_for_ticket_open.tickets.iter().find(|t| t.id == id).cloned()).map(|ticket| {
+                ticket_detail(ticket, boot_for_ticket_open.clone(), lang, set_open_ticket, set_data, set_error)
             })}
         </div>
     }.into_view()
@@ -525,6 +536,7 @@ fn main_view(
     set_drag_task: WriteSignal<Option<String>>,
     set_show_create: WriteSignal<bool>,
     set_show_create_ticket: WriteSignal<bool>,
+    set_open_ticket: WriteSignal<Option<String>>,
     set_data: WriteSignal<Option<BootstrapDto>>,
     set_error: WriteSignal<Option<String>>,
 ) -> View {
@@ -541,7 +553,7 @@ fn main_view(
             set_data,
             set_error,
         ),
-        NavView::Tickets => ticket_view(boot, lang, set_show_create_ticket),
+        NavView::Tickets => ticket_view(boot, lang, set_show_create_ticket, set_open_ticket),
         NavView::Calendar => calendar_view(boot, lang, set_open_task),
         NavView::Gantt => gantt_view(boot, lang, set_open_task),
         NavView::Roadmap => roadmap_view(boot, lang, set_open_task),
@@ -713,6 +725,7 @@ fn ticket_view(
     boot: BootstrapDto,
     lang: ReadSignal<Lang>,
     set_show_create_ticket: WriteSignal<bool>,
+    set_open_ticket: WriteSignal<Option<String>>,
 ) -> View {
     let open = boot
         .tickets
@@ -755,6 +768,7 @@ fn ticket_view(
                     }.into_view()
                 } else {
                     boot.tickets.into_iter().map(|ticket| {
+                        let ticket_id = ticket.id.clone();
                         let status = ticket_status_label(&ticket.status, lang.get()).to_string();
                         let status_class = format!("ticket-status {}", ticket_status_class(&ticket.status));
                         let priority = priority_label(&ticket.priority, lang.get()).to_string();
@@ -766,14 +780,14 @@ fn ticket_view(
                         };
                         let updated = if lang.get() == Lang::De { ticket.updated_label_de } else { ticket.updated_label_en };
                         view! {
-                            <article class="ticket-row">
+                            <button class="ticket-row" on:click=move |_| set_open_ticket.set(Some(ticket_id.clone()))>
                                 <span><small>{ticket.key}</small><strong>{ticket.title}</strong><em>{ticket.description}</em></span>
                                 <span><b class=status_class>{status}</b></span>
                                 <span>{priority}</span>
                                 <span>{requester}</span>
                                 <span>{assignee}</span>
                                 <span>{updated}</span>
-                            </article>
+                            </button>
                         }
                     }).collect_view().into_view()
                 }}
@@ -1425,7 +1439,440 @@ fn create_ticket_modal(
     }.into_view()
 }
 
+fn ticket_detail(
+    ticket: TicketDto,
+    boot: BootstrapDto,
+    lang: ReadSignal<Lang>,
+    set_open_ticket: WriteSignal<Option<String>>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) -> View {
+    let (title, set_title) = create_signal(ticket.title.clone());
+    let (description, set_description) = create_signal(ticket.description.clone());
+    let (requester_name, set_requester_name) = create_signal(ticket.requester_name.clone());
+    let (status, set_status) = create_signal(ticket.status.clone());
+    let (priority, set_priority) = create_signal(ticket.priority.clone());
+    let (assignee_id, set_assignee_id) =
+        create_signal(ticket.assignee_id.clone().unwrap_or_default());
+    let (busy, set_busy) = create_signal(false);
+    let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+
+    let ticket_id_for_save = ticket.id.clone();
+    let save = move |_| {
+        if title.get_untracked().trim().is_empty() {
+            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
+                "Bitte gib zuerst einen Tickettitel ein.".into()
+            } else {
+                "Add a ticket title first.".into()
+            }));
+            return;
+        }
+        set_local_error.set(None);
+        set_busy.set(true);
+        let assignee = assignee_id.get_untracked();
+        let payload = UpdateTicketRequest {
+            title: Some(title.get_untracked()),
+            description: Some(description.get_untracked()),
+            status: Some(status.get_untracked()),
+            priority: Some(priority.get_untracked()),
+            requester_name: Some(requester_name.get_untracked()),
+            assignee_id: Some((!assignee.trim().is_empty()).then_some(assignee)),
+        };
+        let ticket_id = ticket_id_for_save.clone();
+        spawn_local(async move {
+            match api_patch::<_, TicketDto>(&format!("/api/tickets/{ticket_id}"), &payload).await {
+                Ok(ticket) => {
+                    replace_ticket(set_data, ticket);
+                    set_error.set(None);
+                    set_open_ticket.set(None);
+                }
+                Err(err) => {
+                    set_local_error.set(Some(err.message.clone()));
+                    set_error.set(Some(err.message));
+                }
+            }
+            set_busy.set(false);
+        });
+    };
+
+    let ticket_id_for_delete = ticket.id.clone();
+    let ticket_title_for_delete = ticket.title.clone();
+    let delete = move |_| {
+        let confirm_text = if lang.get_untracked() == Lang::De {
+            format!("{ticket_title_for_delete} wirklich loeschen?")
+        } else {
+            format!("Delete {ticket_title_for_delete}?")
+        };
+        let confirmed = web_sys::window()
+            .and_then(|w| w.confirm_with_message(&confirm_text).ok())
+            .unwrap_or(false);
+        if !confirmed {
+            return;
+        }
+        let ticket_id = ticket_id_for_delete.clone();
+        spawn_local(async move {
+            match api_delete_empty(&format!("/api/tickets/{ticket_id}")).await {
+                Ok(()) => {
+                    remove_ticket(set_data, &ticket_id);
+                    set_open_ticket.set(None);
+                    set_error.set(None);
+                }
+                Err(err) => set_error.set(Some(err.message)),
+            }
+        });
+    };
+
+    let current_status = ticket.status.clone();
+    let current_priority = ticket.priority.clone();
+    let current_assignee = ticket.assignee_id.clone().unwrap_or_default();
+
+    view! {
+        <div class="modal-backdrop">
+            <section class="create-modal">
+                <header>
+                    <strong>"T"</strong>
+                    <h2>{ticket.key.clone()}</h2>
+                    <button on:click=move |_| set_open_ticket.set(None)>"x"</button>
+                </header>
+                <label class="modal-field title-field">
+                    <span>{move || if lang.get() == Lang::De { "Titel" } else { "Title" }}</span>
+                    <input class="title-input" prop:value=title on:input=move |ev| {
+                        set_title.set(event_target_value(&ev));
+                        set_local_error.set(None);
+                    }/>
+                </label>
+                {move || local_error.get().map(|err| view! {
+                    <div class="modal-error">{err}</div>
+                })}
+                <label class="modal-field">
+                    <span>{move || if lang.get() == Lang::De { "Beschreibung" } else { "Description" }}</span>
+                    <textarea prop:value=description on:input=move |ev| set_description.set(textarea_value(&ev))></textarea>
+                </label>
+                <div class="modal-meta ticket-meta">
+                    <input placeholder=move || if lang.get() == Lang::De { "Melder / Kontakt" } else { "Requester / contact" } prop:value=requester_name on:input=move |ev| set_requester_name.set(event_target_value(&ev))/>
+                    <select on:change=move |ev| set_status.set(ticket_status_from_value(&select_value(&ev)))>
+                        <option value="open" selected=current_status == TicketStatus::Open>{move || if lang.get() == Lang::De { "Offen" } else { "Open" }}</option>
+                        <option value="in_progress" selected=current_status == TicketStatus::InProgress>{move || if lang.get() == Lang::De { "In Arbeit" } else { "In progress" }}</option>
+                        <option value="resolved" selected=current_status == TicketStatus::Resolved>{move || if lang.get() == Lang::De { "Geloest" } else { "Resolved" }}</option>
+                        <option value="closed" selected=current_status == TicketStatus::Closed>{move || if lang.get() == Lang::De { "Geschlossen" } else { "Closed" }}</option>
+                    </select>
+                    <select on:change=move |ev| set_priority.set(priority_from_value(&select_value(&ev)))>
+                        <option value="urgent" selected=current_priority == Priority::Urgent>{move || if lang.get() == Lang::De { "Dringend" } else { "Urgent" }}</option>
+                        <option value="high" selected=current_priority == Priority::High>{move || if lang.get() == Lang::De { "Hoch" } else { "High" }}</option>
+                        <option value="medium" selected=current_priority == Priority::Medium>{move || if lang.get() == Lang::De { "Mittel" } else { "Medium" }}</option>
+                        <option value="low" selected=current_priority == Priority::Low>{move || if lang.get() == Lang::De { "Niedrig" } else { "Low" }}</option>
+                    </select>
+                    <select on:change=move |ev| set_assignee_id.set(select_value(&ev))>
+                        <option value="" selected=current_assignee.is_empty()>{move || if lang.get() == Lang::De { "Nicht zugewiesen" } else { "Unassigned" }}</option>
+                        {boot.members.clone().into_iter().map(|m| {
+                            let selected = current_assignee == m.user_id;
+                            view! { <option value=m.user_id selected=selected>{m.name}</option> }
+                        }).collect_view()}
+                    </select>
+                </div>
+                <footer>
+                    <button class="danger-link danger-action" on:click=delete>{move || if lang.get() == Lang::De { "Loeschen" } else { "Delete" }}</button>
+                    <button class="btn ghost" on:click=move |_| set_open_ticket.set(None)>{move || if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }}</button>
+                    <button class="btn primary" disabled=move || busy.get() on:click=save>{move || if lang.get() == Lang::De { "Speichern" } else { "Save" }}</button>
+                </footer>
+            </section>
+        </div>
+    }.into_view()
+}
+
 fn task_detail(
+    task: TaskDto,
+    boot: BootstrapDto,
+    lang: ReadSignal<Lang>,
+    set_open_task: WriteSignal<Option<String>>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) -> View {
+    let (comment, set_comment) = create_signal(String::new());
+    let (editing, set_editing) = create_signal(false);
+    let (title_edit, set_title_edit) = create_signal(task.title.clone());
+    let (description_edit, set_description_edit) = create_signal(task.description.clone());
+    let (status_edit, set_status_edit) = create_signal(task.status_id.clone());
+    let (priority_edit, set_priority_edit) = create_signal(task.priority.clone());
+    let (due_date_edit, set_due_date_edit) =
+        create_signal(task.due_date.clone().unwrap_or_default());
+    let (phase_edit, set_phase_edit) = create_signal(task.phase.clone());
+    let (assignee_edit, set_assignee_edit) =
+        create_signal(task.assignee_ids.first().cloned().unwrap_or_default());
+    let (busy, set_busy) = create_signal(false);
+    let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+
+    let status_label = boot
+        .statuses
+        .iter()
+        .find(|s| s.id == task.status_id)
+        .map(|s| status_name(s, lang.get()).to_string())
+        .unwrap_or_default();
+    let title = task_title(&task, lang.get());
+    let description = description_for(&task, lang.get());
+    let assignees = task.assignee_ids.clone();
+    let due = task
+        .due_date
+        .as_deref()
+        .map(|d| fmt_date(d, lang.get()))
+        .unwrap_or_else(|| "-".into());
+    let priority = priority_label(&task.priority, lang.get()).to_string();
+    let project_line = format!("{} / {}", task.tag, boot.project.name);
+    let pct = subtask_pct(&task);
+    let subtasks = task.subtasks.clone();
+    let attachments = task.attachments.clone();
+    let comments = task.comments.clone();
+    let task_id_base = task.id.clone();
+    let task_id_for_comment = task.id.clone();
+    let statuses_for_status_options = boot.statuses.clone();
+    let members_for_display = boot.members.clone();
+    let members_for_assign = boot.members.clone();
+
+    let task_id_for_save = task.id.clone();
+    let save = move |_| {
+        if title_edit.get_untracked().trim().is_empty() {
+            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
+                "Bitte gib zuerst einen Aufgabentitel ein.".into()
+            } else {
+                "Add a task title first.".into()
+            }));
+            return;
+        }
+        set_local_error.set(None);
+        set_busy.set(true);
+        let assignee = assignee_edit.get_untracked();
+        let assignee_ids = if assignee.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![assignee]
+        };
+        let due_date = due_date_edit.get_untracked();
+        let payload = UpdateTaskRequest {
+            title: Some(title_edit.get_untracked()),
+            description: Some(description_edit.get_untracked()),
+            tag: None,
+            tag_color: None,
+            priority: Some(priority_edit.get_untracked()),
+            status_id: Some(status_edit.get_untracked()),
+            start_date: None,
+            due_date: Some((!due_date.trim().is_empty()).then_some(due_date)),
+            phase: Some(phase_edit.get_untracked()),
+            assignee_ids: Some(assignee_ids),
+        };
+        let task_id = task_id_for_save.clone();
+        spawn_local(async move {
+            match api_patch::<_, TaskDto>(&format!("/api/tasks/{task_id}"), &payload).await {
+                Ok(task) => {
+                    replace_task(set_data, task);
+                    set_editing.set(false);
+                    set_error.set(None);
+                }
+                Err(err) => {
+                    set_local_error.set(Some(err.message.clone()));
+                    set_error.set(Some(err.message));
+                }
+            }
+            set_busy.set(false);
+        });
+    };
+
+    let task_id_for_delete = task.id.clone();
+    let title_for_delete = title.clone();
+    let delete = move |_| {
+        let confirm_text = if lang.get_untracked() == Lang::De {
+            format!("{title_for_delete} wirklich loeschen?")
+        } else {
+            format!("Delete {title_for_delete}?")
+        };
+        let confirmed = web_sys::window()
+            .and_then(|w| w.confirm_with_message(&confirm_text).ok())
+            .unwrap_or(false);
+        if !confirmed {
+            return;
+        }
+        let task_id = task_id_for_delete.clone();
+        spawn_local(async move {
+            match api_delete_empty(&format!("/api/tasks/{task_id}")).await {
+                Ok(()) => {
+                    remove_task(set_data, &task_id);
+                    set_open_task.set(None);
+                    set_error.set(None);
+                }
+                Err(err) => set_error.set(Some(err.message)),
+            }
+        });
+    };
+
+    let reset_title = task.title.clone();
+    let reset_description = task.description.clone();
+    let reset_status = task.status_id.clone();
+    let reset_priority = task.priority.clone();
+    let reset_due = task.due_date.clone().unwrap_or_default();
+    let reset_phase = task.phase.clone();
+    let reset_assignee = task.assignee_ids.first().cloned().unwrap_or_default();
+
+    view! {
+        <div class="drawer-backdrop" on:click=move |_| set_open_task.set(None)></div>
+        <aside class="task-drawer">
+            <header>
+                <span>{task.key.clone()}</span>
+                {move || if editing.get() {
+                    let current = status_edit.get_untracked();
+                    view! {
+                        <select class="compact-select" on:change=move |ev| set_status_edit.set(select_value(&ev))>
+                            {statuses_for_status_options.clone().into_iter().map(|s| {
+                                let selected = current == s.id;
+                                let label = status_name(&s, lang.get()).to_string();
+                                view! { <option value=s.id selected=selected>{label}</option> }
+                            }).collect_view()}
+                        </select>
+                    }.into_view()
+                } else {
+                    view! { <b>{status_label.clone()}</b> }.into_view()
+                }}
+                <span class="drawer-actions">
+                    <button class="link-button" on:click=move |_| set_editing.update(|v| *v = !*v)>
+                        {move || if editing.get() {
+                            if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }
+                        } else if lang.get() == Lang::De { "Bearbeiten" } else { "Edit" }}
+                    </button>
+                    <button class="danger-link" on:click=delete>{move || if lang.get() == Lang::De { "Loeschen" } else { "Delete" }}</button>
+                    <button class="drawer-close" on:click=move |_| set_open_task.set(None)>"x"</button>
+                </span>
+            </header>
+            {move || if editing.get() {
+                view! {
+                    <label class="drawer-field title-field">
+                        <span>{move || if lang.get() == Lang::De { "Titel" } else { "Title" }}</span>
+                        <input class="title-input" prop:value=title_edit on:input=move |ev| {
+                            set_title_edit.set(event_target_value(&ev));
+                            set_local_error.set(None);
+                        }/>
+                    </label>
+                }.into_view()
+            } else {
+                view! { <h2>{title.clone()}</h2> }.into_view()
+            }}
+            {move || if editing.get() {
+                let current_assignee = assignee_edit.get_untracked();
+                let current_priority = priority_edit.get_untracked();
+                let current_phase = phase_edit.get_untracked();
+                view! {
+                    <div class="detail-meta">
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Zuweisen" } else { "Assign" }}</small>
+                            <select on:change=move |ev| set_assignee_edit.set(select_value(&ev))>
+                                <option value="" selected=current_assignee.is_empty()>{move || if lang.get() == Lang::De { "Nicht zugewiesen" } else { "Unassigned" }}</option>
+                                {members_for_assign.clone().into_iter().map(|m| {
+                                    let selected = current_assignee == m.user_id;
+                                    view! { <option value=m.user_id selected=selected>{m.name}</option> }
+                                }).collect_view()}
+                            </select>
+                        </span>
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Faelligkeit" } else { "Due date" }}</small>
+                            <input type="date" prop:value=due_date_edit on:input=move |ev| set_due_date_edit.set(event_target_value(&ev))/>
+                        </span>
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Prioritaet" } else { "Priority" }}</small>
+                            <select on:change=move |ev| set_priority_edit.set(priority_from_value(&select_value(&ev)))>
+                                <option value="urgent" selected=current_priority == Priority::Urgent>{move || if lang.get() == Lang::De { "Dringend" } else { "Urgent" }}</option>
+                                <option value="high" selected=current_priority == Priority::High>{move || if lang.get() == Lang::De { "Hoch" } else { "High" }}</option>
+                                <option value="medium" selected=current_priority == Priority::Medium>{move || if lang.get() == Lang::De { "Mittel" } else { "Medium" }}</option>
+                                <option value="low" selected=current_priority == Priority::Low>{move || if lang.get() == Lang::De { "Niedrig" } else { "Low" }}</option>
+                            </select>
+                        </span>
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Phase" } else { "Phase" }}</small>
+                            <select on:change=move |ev| set_phase_edit.set(select_value(&ev))>
+                                <option value="planung" selected=current_phase == "planung">{move || if lang.get() == Lang::De { "Planung" } else { "Planning" }}</option>
+                                <option value="vergabe" selected=current_phase == "vergabe">{move || if lang.get() == Lang::De { "Vergabe" } else { "Tendering" }}</option>
+                                <option value="ausfuehrung" selected=current_phase == "ausfuehrung">{move || if lang.get() == Lang::De { "Ausfuehrung" } else { "Execution" }}</option>
+                                <option value="abnahme" selected=current_phase == "abnahme">{move || if lang.get() == Lang::De { "Abnahme" } else { "Handover" }}</option>
+                            </select>
+                        </span>
+                    </div>
+                }.into_view()
+            } else {
+                view! {
+                    <div class="detail-meta">
+                        <span><small>{move || if lang.get() == Lang::De { "Zuweisen" } else { "Assign" }}</small>{assignee_avatars(&assignees, &members_for_display)}</span>
+                        <span><small>{move || if lang.get() == Lang::De { "Faelligkeit" } else { "Due date" }}</small><b>{due.clone()}</b></span>
+                        <span><small>{move || if lang.get() == Lang::De { "Prioritaet" } else { "Priority" }}</small><b>{priority.clone()}</b></span>
+                        <span><small>{move || if lang.get() == Lang::De { "Projekt" } else { "Project" }}</small><b>{project_line.clone()}</b></span>
+                    </div>
+                }.into_view()
+            }}
+            <section class="drawer-edit-actions" style=move || if editing.get() { "".to_string() } else { "display:none".to_string() }>
+                {move || local_error.get().map(|err| view! { <div class="modal-error inline">{err}</div> })}
+                <button class="btn ghost" on:click=move |_| {
+                    set_title_edit.set(reset_title.clone());
+                    set_description_edit.set(reset_description.clone());
+                    set_status_edit.set(reset_status.clone());
+                    set_priority_edit.set(reset_priority.clone());
+                    set_due_date_edit.set(reset_due.clone());
+                    set_phase_edit.set(reset_phase.clone());
+                    set_assignee_edit.set(reset_assignee.clone());
+                    set_local_error.set(None);
+                    set_editing.set(false);
+                }>{move || if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }}</button>
+                <button class="btn primary" disabled=move || busy.get() on:click=save>{move || if lang.get() == Lang::De { "Speichern" } else { "Save" }}</button>
+            </section>
+            <section>
+                <h3>{move || if lang.get() == Lang::De { "Beschreibung" } else { "Description" }}</h3>
+                {move || if editing.get() {
+                    view! {
+                        <textarea class="drawer-textarea" prop:value=description_edit on:input=move |ev| set_description_edit.set(textarea_value(&ev))></textarea>
+                    }.into_view()
+                } else {
+                    view! { <p>{description.clone()}</p> }.into_view()
+                }}
+            </section>
+            <section>
+                <h3>{move || if lang.get() == Lang::De { "Unteraufgaben" } else { "Subtasks" }}</h3>
+                <div class="progress-line"><i style=format!("width:{pct}%")></i></div>
+                {subtasks.into_iter().map(|sub| {
+                    let task_id = task_id_base.clone();
+                    let sub_id = sub.id.clone();
+                    let done = sub.done;
+                    let label = title_for(sub.title, sub.title_en, lang.get());
+                    view! {
+                        <label class="subtask">
+                            <input type="checkbox" checked=done on:change=move |_| toggle_subtask(task_id.clone(), sub_id.clone(), !done, set_data, set_error)/>
+                            <span>{label}</span>
+                        </label>
+                    }
+                }).collect_view()}
+            </section>
+            <section>
+                <h3>{move || if lang.get() == Lang::De { "Anhaenge" } else { "Attachments" }}</h3>
+                <div class="chips">
+                    {attachments.into_iter().map(|a| view! { <a class="file-chip" href=format!("/api/attachments/{}", a.id) download>"Datei "{a.file_name}<small>{a.size_label}</small></a> }).collect_view()}
+                </div>
+            </section>
+            <section>
+                <h3>{move || if lang.get() == Lang::De { "Kommentare" } else { "Comments" }}</h3>
+                {comments.into_iter().map(|c| {
+                    let created = if lang.get() == Lang::De { c.created_label_de } else { c.created_label_en };
+                    view! { <div class="comment"><span class="avatar tiny">{c.author_initials}</span><p><strong>{c.author_name}</strong><br/>{c.body}</p><small>{created}</small></div> }
+                }).collect_view()}
+                <div class="comment-box">
+                    <input placeholder=move || if lang.get() == Lang::De { "Kommentar schreiben..." } else { "Write a comment..." } prop:value=comment on:input=move |ev| set_comment.set(event_target_value(&ev))/>
+                    <button on:click=move |_| {
+                        let body = comment.get_untracked();
+                        if !body.trim().is_empty() {
+                            add_comment(task_id_for_comment.clone(), body, set_data, set_error);
+                            set_comment.set(String::new());
+                        }
+                    }>"Enter"</button>
+                </div>
+            </section>
+        </aside>
+    }.into_view()
+}
+
+#[allow(dead_code)]
+fn task_detail_readonly(
     task: TaskDto,
     boot: BootstrapDto,
     lang: ReadSignal<Lang>,
@@ -1894,6 +2341,32 @@ fn replace_task(set_data: WriteSignal<Option<BootstrapDto>>, task: TaskDto) {
             if let Some(current) = data.tasks.iter_mut().find(|t| t.id == task.id) {
                 *current = task;
             }
+        }
+    });
+}
+
+fn remove_task(set_data: WriteSignal<Option<BootstrapDto>>, task_id: &str) {
+    set_data.update(|data| {
+        if let Some(data) = data {
+            data.tasks.retain(|task| task.id != task_id);
+        }
+    });
+}
+
+fn replace_ticket(set_data: WriteSignal<Option<BootstrapDto>>, ticket: TicketDto) {
+    set_data.update(|data| {
+        if let Some(data) = data {
+            if let Some(current) = data.tickets.iter_mut().find(|t| t.id == ticket.id) {
+                *current = ticket;
+            }
+        }
+    });
+}
+
+fn remove_ticket(set_data: WriteSignal<Option<BootstrapDto>>, ticket_id: &str) {
+    set_data.update(|data| {
+        if let Some(data) = data {
+            data.tickets.retain(|ticket| ticket.id != ticket_id);
         }
     });
 }
