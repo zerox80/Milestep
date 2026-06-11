@@ -1,0 +1,56 @@
+services:
+  app:
+    build:
+      context: .
+      target: backend-runtime
+    environment:
+      DATABASE_URL: postgres://kowobau:kowobau@postgres:5432/kowobau
+      KOWOBAU_SESSION_SECRET: change-me-in-production-compose-secret
+      KOWOBAU_BIND: 0.0.0.0:8080
+      KOWOBAU_UPLOAD_DIR: /app/uploads
+      KOWOBAU_COOKIE_SECURE: "false"
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kowobau-backend", "--healthcheck"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  nginx:
+    build:
+      context: .
+      target: nginx-runtime
+    ports:
+      - "127.0.0.1:${KOWOBAU_HTTP_PORT:-80}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/api/health >/dev/null"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:17-alpine
+    ports:
+      - "127.0.0.1:${KOWOBAU_POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: kowobau
+      POSTGRES_PASSWORD: kowobau
+      POSTGRES_DB: kowobau
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kowobau -d kowobau"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  uploads:

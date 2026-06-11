@@ -1,0 +1,8 @@
+/target/
+/dist/
+/crates/frontend/dist/
+/crates/backend/uploads/*
+!/crates/backend/uploads/.gitkeep
+.env
+.env.local
+*.log
