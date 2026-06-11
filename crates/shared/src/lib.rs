@@ -48,6 +48,15 @@ pub enum Priority {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum TicketStatus {
+    Open,
+    InProgress,
+    Resolved,
+    Closed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum NotificationKind {
     Assigned,
     Mention,
@@ -175,6 +184,25 @@ pub struct TaskDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TicketDto {
+    pub id: String,
+    pub project_id: String,
+    pub key: String,
+    pub title: String,
+    pub description: String,
+    pub status: TicketStatus,
+    pub priority: Priority,
+    pub requester_name: String,
+    pub assignee_id: Option<String>,
+    pub assignee_name: Option<String>,
+    pub created_by_name: Option<String>,
+    pub created_label_de: String,
+    pub created_label_en: String,
+    pub updated_label_de: String,
+    pub updated_label_en: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MilestoneDto {
     pub id: String,
     pub project_id: String,
@@ -220,6 +248,7 @@ pub struct BootstrapDto {
     pub members: Vec<MemberDto>,
     pub statuses: Vec<StatusDto>,
     pub tasks: Vec<TaskDto>,
+    pub tickets: Vec<TicketDto>,
     pub milestones: Vec<MilestoneDto>,
     pub notifications: Vec<NotificationDto>,
     pub audit_events: Vec<AuditEventDto>,
@@ -259,6 +288,17 @@ pub struct CreateTaskRequest {
     pub phase: String,
     pub assignee_ids: Vec<String>,
     pub subtasks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTicketRequest {
+    pub project_id: String,
+    pub title: String,
+    pub description: String,
+    pub status: TicketStatus,
+    pub priority: Priority,
+    pub requester_name: String,
+    pub assignee_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

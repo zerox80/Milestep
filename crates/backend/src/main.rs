@@ -310,6 +310,7 @@ fn build_router(state: AppState) -> Router {
         .route("/auth/me", get(me))
         .route("/bootstrap", get(bootstrap))
         .route("/tasks", get(list_tasks).post(create_task))
+        .route("/tickets", get(list_tickets).post(create_ticket))
         .route(
             "/tasks/{id}",
             get(get_task).patch(update_task).delete(delete_task),
@@ -684,6 +685,15 @@ async fn list_tasks(
     Ok(Json(bootstrap.tasks))
 }
 
+async fn list_tickets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<TicketDto>>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let bootstrap = fetch_bootstrap(&state.db, uuid_from_str(&ctx.user.id)?).await?;
+    Ok(Json(bootstrap.tickets))
+}
+
 async fn get_task(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -781,6 +791,84 @@ async fn create_task(
     .await?;
     tx.commit().await?;
     Ok(Json(fetch_task(&state.db, task_id).await?))
+}
+
+async fn create_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateTicketRequest>,
+) -> Result<Json<TicketDto>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let user_id = uuid_from_str(&ctx.user.id)?;
+    let project_id = uuid_from_str(&payload.project_id)?;
+    let workspace_id = assert_project_edit(&state.db, user_id, project_id).await?;
+
+    if payload.title.trim().is_empty() {
+        return Err(AppError::BadRequest("ticket title is required".into()));
+    }
+
+    let assignee_id = payload
+        .assignee_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(uuid_from_str)
+        .transpose()?;
+
+    let mut tx = state.db.begin().await?;
+    if let Some(assignee_id) = assignee_id {
+        assert_user_in_project(&mut *tx, project_id, assignee_id).await?;
+    }
+
+    // Serializes key generation per project so concurrent creates cannot collide.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("tickets:{project_id}"))
+        .execute(&mut *tx)
+        .await?;
+    let (project_key,): (String,) = sqlx::query_as("SELECT key FROM projects WHERE id = $1")
+        .bind(project_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let next: (i32,) = sqlx::query_as(
+        "SELECT COALESCE(MAX(split_part(key, '-', 3)::INT), 0) + 1 \
+         FROM tickets WHERE project_id = $1 AND key LIKE $2 || '-T-%' \
+         AND split_part(key, '-', 3) ~ '^[0-9]+$'",
+    )
+    .bind(project_id)
+    .bind(&project_key)
+    .fetch_one(&mut *tx)
+    .await?;
+    let key = format!("{}-T-{}", project_key, next.0);
+
+    let ticket_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO tickets \
+         (id, project_id, key, title, description, status, priority, requester_name, assignee_id, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(ticket_id)
+    .bind(project_id)
+    .bind(&key)
+    .bind(payload.title.trim())
+    .bind(payload.description.trim())
+    .bind(ticket_status_to_db(&payload.status))
+    .bind(priority_to_db(&payload.priority))
+    .bind(payload.requester_name.trim())
+    .bind(assignee_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    record_audit(
+        &mut *tx,
+        workspace_id,
+        user_id,
+        "created ticket",
+        "ticket",
+        Some(ticket_id),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(fetch_ticket(&state.db, ticket_id).await?))
 }
 
 async fn update_task(
@@ -1829,6 +1917,23 @@ struct TaskRow {
 }
 
 #[derive(Debug, FromRow)]
+struct TicketRow {
+    id: Uuid,
+    project_id: Uuid,
+    key: String,
+    title: String,
+    description: String,
+    status: String,
+    priority: String,
+    requester_name: String,
+    assignee_id: Option<Uuid>,
+    assignee_name: Option<String>,
+    created_by_name: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
 struct SubtaskRow {
     id: Uuid,
     task_id: Uuid,
@@ -1962,6 +2067,7 @@ async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<BootstrapDto, App
     let statuses = fetch_statuses(db, project_id).await?;
     let members = fetch_members(db, membership.workspace_id).await?;
     let tasks = fetch_tasks(db, project_id).await?;
+    let tickets = fetch_tickets(db, project_id).await?;
     let milestones = fetch_milestones(db, project_id).await?;
     let notifications = fetch_notifications(db, user_id).await?;
     let audit_events = fetch_audit_events(db, membership.workspace_id).await?;
@@ -1974,6 +2080,7 @@ async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<BootstrapDto, App
         members,
         statuses,
         tasks,
+        tickets,
         milestones,
         notifications,
         audit_events,
@@ -2091,6 +2198,53 @@ async fn fetch_task(db: &PgPool, task_id: Uuid) -> Result<TaskDto, AppError> {
         .await?
         .pop()
         .ok_or(AppError::NotFound)
+}
+
+const TICKET_SELECT: &str =
+    "SELECT t.id, t.project_id, t.key, t.title, t.description, t.status, t.priority, \
+            t.requester_name, t.assignee_id, au.name AS assignee_name, \
+            cu.name AS created_by_name, t.created_at, t.updated_at \
+     FROM tickets t \
+     LEFT JOIN users au ON au.id = t.assignee_id \
+     LEFT JOIN users cu ON cu.id = t.created_by";
+
+async fn fetch_tickets(db: &PgPool, project_id: Uuid) -> Result<Vec<TicketDto>, AppError> {
+    let rows: Vec<TicketRow> = sqlx::query_as(&format!(
+        "{TICKET_SELECT} WHERE t.project_id = $1 ORDER BY t.updated_at DESC, t.key DESC"
+    ))
+    .bind(project_id)
+    .fetch_all(db)
+    .await?;
+    rows.into_iter().map(ticket_from_row).collect()
+}
+
+async fn fetch_ticket(db: &PgPool, ticket_id: Uuid) -> Result<TicketDto, AppError> {
+    let row: TicketRow = sqlx::query_as(&format!("{TICKET_SELECT} WHERE t.id = $1"))
+        .bind(ticket_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    ticket_from_row(row)
+}
+
+fn ticket_from_row(row: TicketRow) -> Result<TicketDto, AppError> {
+    Ok(TicketDto {
+        id: row.id.to_string(),
+        project_id: row.project_id.to_string(),
+        key: row.key,
+        title: row.title,
+        description: row.description,
+        status: ticket_status_from_db(&row.status)?,
+        priority: priority_from_db(&row.priority)?,
+        requester_name: row.requester_name,
+        assignee_id: row.assignee_id.map(|id| id.to_string()),
+        assignee_name: row.assignee_name,
+        created_by_name: row.created_by_name,
+        created_label_de: relative_label(row.created_at, "de"),
+        created_label_en: relative_label(row.created_at, "en"),
+        updated_label_de: relative_label(row.updated_at, "de"),
+        updated_label_en: relative_label(row.updated_at, "en"),
+    })
 }
 
 /// Loads all task children (assignees, dependencies, subtasks, comments,
@@ -2378,6 +2532,28 @@ async fn assert_status_in_project(
     if count.0 == 0 {
         return Err(AppError::BadRequest(
             "status does not belong to project".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn assert_user_in_project(
+    exec: impl sqlx::PgExecutor<'_>,
+    project_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM memberships m \
+         JOIN projects p ON p.workspace_id = m.workspace_id \
+         WHERE p.id = $1 AND m.user_id = $2 AND m.status = 'active'",
+    )
+    .bind(project_id)
+    .bind(user_id)
+    .fetch_one(exec)
+    .await?;
+    if count.0 == 0 {
+        return Err(AppError::BadRequest(
+            "assignee is not an active workspace member".into(),
         ));
     }
     Ok(())
@@ -3220,6 +3396,27 @@ fn priority_from_db(value: &str) -> Result<Priority, AppError> {
         "medium" => Ok(Priority::Medium),
         "low" => Ok(Priority::Low),
         _ => Err(AppError::BadRequest(format!("unknown priority {value}"))),
+    }
+}
+
+fn ticket_status_to_db(status: &TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Open => "open",
+        TicketStatus::InProgress => "in_progress",
+        TicketStatus::Resolved => "resolved",
+        TicketStatus::Closed => "closed",
+    }
+}
+
+fn ticket_status_from_db(value: &str) -> Result<TicketStatus, AppError> {
+    match value {
+        "open" => Ok(TicketStatus::Open),
+        "in_progress" => Ok(TicketStatus::InProgress),
+        "resolved" => Ok(TicketStatus::Resolved),
+        "closed" => Ok(TicketStatus::Closed),
+        _ => Err(AppError::BadRequest(format!(
+            "unknown ticket status {value}"
+        ))),
     }
 }
 

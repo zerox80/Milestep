@@ -16,6 +16,7 @@ enum Lang {
 enum NavView {
     Overview,
     Board,
+    Tickets,
     Calendar,
     Gantt,
     Roadmap,
@@ -30,6 +31,8 @@ impl NavView {
             (Self::Overview, Lang::En) => "Overview",
             (Self::Board, Lang::De) => "Board",
             (Self::Board, Lang::En) => "Board",
+            (Self::Tickets, Lang::De) => "Tickets",
+            (Self::Tickets, Lang::En) => "Tickets",
             (Self::Calendar, Lang::De) => "Kalender",
             (Self::Calendar, Lang::En) => "Calendar",
             (Self::Gantt, Lang::De) => "Gantt",
@@ -72,6 +75,7 @@ fn AppRoot() -> impl IntoView {
     let (board_mode, set_board_mode) = create_signal("board".to_string());
     let (open_task, set_open_task) = create_signal::<Option<String>>(None);
     let (show_create, set_show_create) = create_signal(false);
+    let (show_create_ticket, set_show_create_ticket) = create_signal(false);
     let (show_notifications, set_show_notifications) = create_signal(false);
     let (drag_task, set_drag_task) = create_signal::<Option<String>>(None);
     let (loading, set_loading) = create_signal(true);
@@ -120,6 +124,8 @@ fn AppRoot() -> impl IntoView {
                     set_open_task,
                     show_create,
                     set_show_create,
+                    show_create_ticket,
+                    set_show_create_ticket,
                     show_notifications,
                     set_show_notifications,
                     drag_task,
@@ -347,6 +353,8 @@ fn dashboard(
     set_open_task: WriteSignal<Option<String>>,
     show_create: ReadSignal<bool>,
     set_show_create: WriteSignal<bool>,
+    show_create_ticket: ReadSignal<bool>,
+    set_show_create_ticket: WriteSignal<bool>,
     show_notifications: ReadSignal<bool>,
     set_show_notifications: WriteSignal<bool>,
     drag_task: ReadSignal<Option<String>>,
@@ -361,6 +369,7 @@ fn dashboard(
     let boot_for_open = boot.clone();
     let boot_for_notifications = boot.clone();
     let boot_for_create = boot.clone();
+    let boot_for_ticket_create = boot.clone();
     let logout_action = move |_| {
         spawn_local(async move {
             let _ = api_empty("/api/auth/logout").await;
@@ -384,6 +393,7 @@ fn dashboard(
                     <span class="side-label">{move || if lang.get() == Lang::De { "Arbeitsbereich" } else { "Workspace" }}</span>
                     {nav_button(NavView::Overview, nav, set_nav, lang, None)}
                     {nav_button(NavView::Board, nav, set_nav, lang, Some(boot.tasks.iter().filter(|t| !t.status_is_done).count()))}
+                    {nav_button(NavView::Tickets, nav, set_nav, lang, Some(boot.tickets.iter().filter(|t| !matches!(t.status, TicketStatus::Resolved | TicketStatus::Closed)).count()))}
                     {nav_button(NavView::Calendar, nav, set_nav, lang, None)}
                     <span class="side-label">{move || if lang.get() == Lang::De { "Planung" } else { "Planning" }}</span>
                     {nav_button(NavView::Gantt, nav, set_nav, lang, None)}
@@ -418,7 +428,21 @@ fn dashboard(
                             view! { <span/> }.into_view()
                         }}
                     </span>
-                    <button class="btn primary" on:click=move |_| set_show_create.set(true)>"+ " {move || if lang.get() == Lang::De { "Neue Aufgabe" } else { "New task" }}</button>
+                    <button class="btn primary" on:click=move |_| {
+                        if nav.get_untracked() == NavView::Tickets {
+                            set_show_create_ticket.set(true);
+                        } else {
+                            set_show_create.set(true);
+                        }
+                    }>
+                        "+ "
+                        {move || match (nav.get(), lang.get()) {
+                            (NavView::Tickets, Lang::De) => "Neues Ticket",
+                            (NavView::Tickets, Lang::En) => "New ticket",
+                            (_, Lang::De) => "Neue Aufgabe",
+                            (_, Lang::En) => "New task",
+                        }}
+                    </button>
                 </header>
 
                 <section class="page-head">
@@ -448,6 +472,7 @@ fn dashboard(
                         drag_task,
                         set_drag_task,
                         set_show_create,
+                        set_show_create_ticket,
                         set_data,
                         set_error,
                     )}
@@ -456,6 +481,12 @@ fn dashboard(
 
             {move || if show_create.get() {
                 create_task_modal(boot_for_create.clone(), lang, set_show_create, set_open_task, set_data, set_error).into_view()
+            } else {
+                view! { <span/> }.into_view()
+            }}
+
+            {move || if show_create_ticket.get() {
+                create_ticket_modal(boot_for_ticket_create.clone(), lang, set_show_create_ticket, set_data, set_error).into_view()
             } else {
                 view! { <span/> }.into_view()
             }}
@@ -493,6 +524,7 @@ fn main_view(
     drag_task: ReadSignal<Option<String>>,
     set_drag_task: WriteSignal<Option<String>>,
     set_show_create: WriteSignal<bool>,
+    set_show_create_ticket: WriteSignal<bool>,
     set_data: WriteSignal<Option<BootstrapDto>>,
     set_error: WriteSignal<Option<String>>,
 ) -> View {
@@ -509,6 +541,7 @@ fn main_view(
             set_data,
             set_error,
         ),
+        NavView::Tickets => ticket_view(boot, lang, set_show_create_ticket),
         NavView::Calendar => calendar_view(boot, lang, set_open_task),
         NavView::Gantt => gantt_view(boot, lang, set_open_task),
         NavView::Roadmap => roadmap_view(boot, lang, set_open_task),
@@ -675,6 +708,80 @@ fn list_view(
         </div>
     }.into_view()
 }
+
+fn ticket_view(
+    boot: BootstrapDto,
+    lang: ReadSignal<Lang>,
+    set_show_create_ticket: WriteSignal<bool>,
+) -> View {
+    let open = boot
+        .tickets
+        .iter()
+        .filter(|t| matches!(t.status, TicketStatus::Open))
+        .count();
+    let active = boot
+        .tickets
+        .iter()
+        .filter(|t| matches!(t.status, TicketStatus::InProgress))
+        .count();
+    let done = boot
+        .tickets
+        .iter()
+        .filter(|t| matches!(t.status, TicketStatus::Resolved | TicketStatus::Closed))
+        .count();
+    view! {
+        <div class="ticket-grid">
+            <div class="stats-row">
+                {stat("T", boot.tickets.len(), if lang.get() == Lang::De { "Tickets gesamt" } else { "Total tickets" }, "cool")}
+                {stat("!", open, if lang.get() == Lang::De { "Offen" } else { "Open" }, "accent")}
+                {stat(">", active, if lang.get() == Lang::De { "In Arbeit" } else { "In progress" }, "warm")}
+                {stat("✓", done, if lang.get() == Lang::De { "Erledigt" } else { "Done" }, "good")}
+            </div>
+            <div class="table-panel">
+                <div class="ticket-head">
+                    <span>{move || if lang.get() == Lang::De { "Ticket" } else { "Ticket" }}</span>
+                    <span>{move || if lang.get() == Lang::De { "Status" } else { "Status" }}</span>
+                    <span>{move || if lang.get() == Lang::De { "Prioritaet" } else { "Priority" }}</span>
+                    <span>{move || if lang.get() == Lang::De { "Melder" } else { "Requester" }}</span>
+                    <span>{move || if lang.get() == Lang::De { "Zuweisung" } else { "Assignee" }}</span>
+                    <span>{move || if lang.get() == Lang::De { "Aktualisiert" } else { "Updated" }}</span>
+                </div>
+                {if boot.tickets.is_empty() {
+                    view! {
+                        <div class="empty-state">
+                            <strong>{move || if lang.get() == Lang::De { "Noch keine Tickets" } else { "No tickets yet" }}</strong>
+                            <button class="btn primary" on:click=move |_| set_show_create_ticket.set(true)>{move || if lang.get() == Lang::De { "Ticket erstellen" } else { "Create ticket" }}</button>
+                        </div>
+                    }.into_view()
+                } else {
+                    boot.tickets.into_iter().map(|ticket| {
+                        let status = ticket_status_label(&ticket.status, lang.get()).to_string();
+                        let status_class = format!("ticket-status {}", ticket_status_class(&ticket.status));
+                        let priority = priority_label(&ticket.priority, lang.get()).to_string();
+                        let assignee = ticket.assignee_name.unwrap_or_else(|| "-".into());
+                        let requester = if ticket.requester_name.trim().is_empty() {
+                            ticket.created_by_name.unwrap_or_else(|| "-".into())
+                        } else {
+                            ticket.requester_name
+                        };
+                        let updated = if lang.get() == Lang::De { ticket.updated_label_de } else { ticket.updated_label_en };
+                        view! {
+                            <article class="ticket-row">
+                                <span><small>{ticket.key}</small><strong>{ticket.title}</strong><em>{ticket.description}</em></span>
+                                <span><b class=status_class>{status}</b></span>
+                                <span>{priority}</span>
+                                <span>{requester}</span>
+                                <span>{assignee}</span>
+                                <span>{updated}</span>
+                            </article>
+                        }
+                    }).collect_view().into_view()
+                }}
+            </div>
+        </div>
+    }.into_view()
+}
+
 fn calendar_view(
     boot: BootstrapDto,
     lang: ReadSignal<Lang>,
@@ -995,6 +1102,113 @@ fn create_task_modal(
                 <footer>
                     <button class="btn ghost" on:click=move |_| set_show_create.set(false)>{move || if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }}</button>
                     <button class="btn primary" disabled=move || busy.get() on:click=create>{move || if lang.get() == Lang::De { "Aufgabe erstellen" } else { "Create task" }}</button>
+                </footer>
+            </section>
+        </div>
+    }.into_view()
+}
+
+fn create_ticket_modal(
+    boot: BootstrapDto,
+    lang: ReadSignal<Lang>,
+    set_show_create_ticket: WriteSignal<bool>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) -> View {
+    let (title, set_title) = create_signal(String::new());
+    let (description, set_description) = create_signal(String::new());
+    let (requester_name, set_requester_name) = create_signal(String::new());
+    let (status, set_status) = create_signal(TicketStatus::Open);
+    let (priority, set_priority) = create_signal(Priority::Medium);
+    let (assignee_id, set_assignee_id) = create_signal(String::new());
+    let (busy, set_busy) = create_signal(false);
+    let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+
+    let create = move |_| {
+        if title.get_untracked().trim().is_empty() {
+            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
+                "Bitte gib zuerst einen Tickettitel ein.".into()
+            } else {
+                "Add a ticket title first.".into()
+            }));
+            return;
+        }
+        set_local_error.set(None);
+        set_busy.set(true);
+        let assignee = assignee_id.get_untracked();
+        let payload = CreateTicketRequest {
+            project_id: boot.project.id.clone(),
+            title: title.get_untracked(),
+            description: description.get_untracked(),
+            status: status.get_untracked(),
+            priority: priority.get_untracked(),
+            requester_name: requester_name.get_untracked(),
+            assignee_id: (!assignee.trim().is_empty()).then_some(assignee),
+        };
+        spawn_local(async move {
+            match api_post::<_, TicketDto>("/api/tickets", &payload).await {
+                Ok(ticket) => {
+                    set_data.update(|data| {
+                        if let Some(data) = data {
+                            data.tickets.insert(0, ticket);
+                        }
+                    });
+                    set_show_create_ticket.set(false);
+                    set_error.set(None);
+                }
+                Err(err) => {
+                    set_local_error.set(Some(err.message.clone()));
+                    set_error.set(Some(err.message));
+                }
+            }
+            set_busy.set(false);
+        });
+    };
+
+    view! {
+        <div class="modal-backdrop">
+            <section class="create-modal">
+                <header>
+                    <strong>"T"</strong>
+                    <h2>{move || if lang.get() == Lang::De { "Neues Ticket" } else { "New ticket" }}</h2>
+                    <button on:click=move |_| set_show_create_ticket.set(false)>"x"</button>
+                </header>
+                <label class="modal-field title-field">
+                    <span>{move || if lang.get() == Lang::De { "Titel" } else { "Title" }}</span>
+                    <input class="title-input" placeholder=move || if lang.get() == Lang::De { "Was ist passiert?" } else { "What happened?" } prop:value=title on:input=move |ev| {
+                        set_title.set(event_target_value(&ev));
+                        set_local_error.set(None);
+                    }/>
+                </label>
+                {move || local_error.get().map(|err| view! {
+                    <div class="modal-error">{err}</div>
+                })}
+                <label class="modal-field">
+                    <span>{move || if lang.get() == Lang::De { "Beschreibung" } else { "Description" }}</span>
+                    <textarea placeholder=move || if lang.get() == Lang::De { "Details, Kontext, betroffene Wohnung..." } else { "Details, context, affected unit..." } prop:value=description on:input=move |ev| set_description.set(textarea_value(&ev))></textarea>
+                </label>
+                <div class="modal-meta ticket-meta">
+                    <input placeholder=move || if lang.get() == Lang::De { "Melder / Kontakt" } else { "Requester / contact" } prop:value=requester_name on:input=move |ev| set_requester_name.set(event_target_value(&ev))/>
+                    <select on:change=move |ev| set_status.set(ticket_status_from_value(&select_value(&ev)))>
+                        <option value="open" selected>{move || if lang.get() == Lang::De { "Offen" } else { "Open" }}</option>
+                        <option value="in_progress">{move || if lang.get() == Lang::De { "In Arbeit" } else { "In progress" }}</option>
+                        <option value="resolved">{move || if lang.get() == Lang::De { "Geloest" } else { "Resolved" }}</option>
+                        <option value="closed">{move || if lang.get() == Lang::De { "Geschlossen" } else { "Closed" }}</option>
+                    </select>
+                    <select on:change=move |ev| set_priority.set(priority_from_value(&select_value(&ev)))>
+                        <option value="urgent">"Dringend"</option>
+                        <option value="high">"Hoch"</option>
+                        <option value="medium" selected>"Mittel"</option>
+                        <option value="low">"Niedrig"</option>
+                    </select>
+                    <select on:change=move |ev| set_assignee_id.set(select_value(&ev))>
+                        <option value="">{move || if lang.get() == Lang::De { "Nicht zugewiesen" } else { "Unassigned" }}</option>
+                        {boot.members.clone().into_iter().map(|m| view! { <option value=m.user_id>{m.name}</option> }).collect_view()}
+                    </select>
+                </div>
+                <footer>
+                    <button class="btn ghost" on:click=move |_| set_show_create_ticket.set(false)>{move || if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }}</button>
+                    <button class="btn primary" disabled=move || busy.get() on:click=create>{move || if lang.get() == Lang::De { "Ticket erstellen" } else { "Create ticket" }}</button>
                 </footer>
             </section>
         </div>
@@ -1506,6 +1720,37 @@ fn priority_from_value(value: &str) -> Priority {
     }
 }
 
+fn ticket_status_from_value(value: &str) -> TicketStatus {
+    match value {
+        "in_progress" => TicketStatus::InProgress,
+        "resolved" => TicketStatus::Resolved,
+        "closed" => TicketStatus::Closed,
+        _ => TicketStatus::Open,
+    }
+}
+
+fn ticket_status_label(status: &TicketStatus, lang: Lang) -> &'static str {
+    match (status, lang) {
+        (TicketStatus::Open, Lang::De) => "Offen",
+        (TicketStatus::Open, Lang::En) => "Open",
+        (TicketStatus::InProgress, Lang::De) => "In Arbeit",
+        (TicketStatus::InProgress, Lang::En) => "In progress",
+        (TicketStatus::Resolved, Lang::De) => "Geloest",
+        (TicketStatus::Resolved, Lang::En) => "Resolved",
+        (TicketStatus::Closed, Lang::De) => "Geschlossen",
+        (TicketStatus::Closed, Lang::En) => "Closed",
+    }
+}
+
+fn ticket_status_class(status: &TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Open => "open",
+        TicketStatus::InProgress => "active",
+        TicketStatus::Resolved => "resolved",
+        TicketStatus::Closed => "closed",
+    }
+}
+
 fn role_label(role: &Role, lang: Lang) -> &'static str {
     match (role, lang) {
         (Role::Owner, Lang::De) => "Owner",
@@ -1556,6 +1801,8 @@ fn header_title(boot: &BootstrapDto, nav: NavView, lang: Lang) -> String {
         }
         (NavView::Board, Lang::De) => "Aufgaben-Board".into(),
         (NavView::Board, Lang::En) => "Task board".into(),
+        (NavView::Tickets, Lang::De) => "Tickets".into(),
+        (NavView::Tickets, Lang::En) => "Tickets".into(),
         (NavView::Calendar, Lang::De) => "Kalender".into(),
         (NavView::Calendar, Lang::En) => "Calendar".into(),
         (NavView::Gantt, Lang::De) => "Gantt-Diagramm".into(),
@@ -1594,6 +1841,22 @@ fn header_subtitle(boot: &BootstrapDto, nav: NavView, lang: Lang) -> String {
             "{} tasks · {} columns",
             boot.tasks.len(),
             boot.statuses.len()
+        ),
+        (NavView::Tickets, Lang::De) => format!(
+            "{} Tickets · {} offen",
+            boot.tickets.len(),
+            boot.tickets
+                .iter()
+                .filter(|t| matches!(t.status, TicketStatus::Open | TicketStatus::InProgress))
+                .count()
+        ),
+        (NavView::Tickets, Lang::En) => format!(
+            "{} tickets · {} open",
+            boot.tickets.len(),
+            boot.tickets
+                .iter()
+                .filter(|t| matches!(t.status, TicketStatus::Open | TicketStatus::InProgress))
+                .count()
         ),
         (NavView::Calendar, Lang::De) => {
             let (_, m, _) = now_date();
@@ -1644,6 +1907,7 @@ fn nav_icon(view: NavView) -> &'static str {
     match view {
         NavView::Overview => "□",
         NavView::Board => "▤",
+        NavView::Tickets => "T",
         NavView::Calendar => "◫",
         NavView::Gantt => "≋",
         NavView::Roadmap => "◇",
