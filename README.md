@@ -42,9 +42,11 @@ With Docker available:
 
 ```powershell
 Copy-Item .env.example .env
-# Edit .env and set KOWOBAU_SESSION_SECRET (see above)
+# Edit .env and set KOWOBAU_SESSION_SECRET and POSTGRES_PASSWORD (see above)
 docker compose up --build
 ```
+
+`POSTGRES_PASSWORD` is required as well; Compose refuses to start without it.
 
 Docker Compose starts:
 
@@ -80,7 +82,24 @@ Before enabling it:
 - Replace the Let's Encrypt certificate paths.
 - Verify HTTP/3 support with `nginx -V 2>&1 | grep -o -- '--with-http_v3_module'`.
 - Open TCP `80`, TCP `443`, and UDP `443`.
-- In production set `KOWOBAU_COOKIE_SECURE=true` for the `app` service.
+- In production set `KOWOBAU_COOKIE_SECURE=true` for the `app` service (the
+  session cookie then uses the `__Host-` prefix).
+- In production also set `KOWOBAU_PUBLIC_ORIGIN=https://kowobau.example.com` so
+  state-changing requests must carry exactly this Origin (CSRF hardening).
+
+## Security notes
+
+- Login and register are rate limited per IP (10/min) both in nginx and in the
+  backend; concurrent Argon2 hashing is bounded so auth floods cannot pin the CPU.
+- `KOWOBAU_TRUST_PROXY=true` (set automatically in Compose) makes the backend
+  use `X-Real-IP` for rate limiting; never enable it without a trusted proxy
+  in front.
+- Workspace invites are single-use tokens with a 14-day expiry. `POST
+  /api/workspaces/{id}/invites` returns `invite_token` and `invite_path`
+  (`/?invite=<token>`); share that link out-of-band. Registering with the token
+  joins the inviting workspace. If the invited email already has an account, it
+  is added as a member directly and no token is returned.
+- `POST /api/auth/logout-all` revokes every session of the current user.
 
 ## Demo account
 

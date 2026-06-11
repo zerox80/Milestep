@@ -4,14 +4,20 @@ services:
       context: .
       target: backend-runtime
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://kowobau:kowobau@postgres:5432/kowobau}
+      DATABASE_URL: ${DATABASE_URL:-postgres://kowobau:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/kowobau}
       KOWOBAU_SESSION_SECRET: ${KOWOBAU_SESSION_SECRET:?Set KOWOBAU_SESSION_SECRET in .env (at least 32 characters)}
       KOWOBAU_BIND: ${KOWOBAU_BIND:-0.0.0.0:8080}
       KOWOBAU_UPLOAD_DIR: ${KOWOBAU_UPLOAD_DIR:-/app/uploads}
       KOWOBAU_COOKIE_SECURE: ${KOWOBAU_COOKIE_SECURE:-false}
       KOWOBAU_SEED_DEMO: ${KOWOBAU_SEED_DEMO:-false}
+      # The app is fronted by the Compose nginx, which sets X-Real-IP.
+      KOWOBAU_TRUST_PROXY: "true"
+      KOWOBAU_PUBLIC_ORIGIN: ${KOWOBAU_PUBLIC_ORIGIN:-}
     volumes:
       - uploads:/app/uploads
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,7 +48,7 @@ services:
       - "127.0.0.1:${KOWOBAU_POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kowobau}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kowobau}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-kowobau}
     volumes:
       - postgres-data:/var/lib/postgresql/data

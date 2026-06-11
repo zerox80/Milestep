@@ -27,13 +27,17 @@ FROM debian:bookworm-slim AS backend-runtime
 WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd --system --uid 10001 --user-group --no-create-home app \
+  && mkdir -p /app/uploads \
+  && chown app:app /app/uploads
 COPY --from=backend-builder /app/target/release/kowobau-backend /usr/local/bin/kowobau-backend
 COPY crates/backend/migrations /app/migrations
 ENV KOWOBAU_BIND=0.0.0.0:8080
 ENV KOWOBAU_UPLOAD_DIR=/app/uploads
 VOLUME ["/app/uploads"]
 EXPOSE 8080
+USER app
 CMD ["kowobau-backend"]
 
 FROM nginx:1.29-alpine AS nginx-runtime

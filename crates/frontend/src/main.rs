@@ -140,10 +140,27 @@ fn auth_shell(
     error: ReadSignal<Option<String>>,
     loading: ReadSignal<bool>,
 ) -> View {
-    let (mode, set_mode) = create_signal(AuthMode::Login);
+    // Invite tokens arrive as /?invite=<token>; pre-fill the code and open the
+    // register form directly. The token is URL-safe base64, no decoding needed.
+    let invite_from_url = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|search| {
+            search
+                .trim_start_matches('?')
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("invite=").map(str::to_string))
+        })
+        .filter(|t| !t.is_empty());
+
+    let (mode, set_mode) = create_signal(if invite_from_url.is_some() {
+        AuthMode::Register
+    } else {
+        AuthMode::Login
+    });
     let (name, set_name) = create_signal(String::new());
     let (email, set_email) = create_signal(String::new());
     let (password, set_password) = create_signal(String::new());
+    let (invite, set_invite) = create_signal(invite_from_url.unwrap_or_default());
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
 
@@ -154,6 +171,7 @@ fn auth_shell(
         let name_now = name.get_untracked();
         let email_now = email.get_untracked();
         let password_now = password.get_untracked();
+        let invite_now = invite.get_untracked();
         spawn_local(async move {
             let result = match mode_now {
                 AuthMode::Login => {
@@ -173,6 +191,8 @@ fn auth_shell(
                             name: name_now,
                             email: email_now,
                             password: password_now,
+                            invite_token: Some(invite_now.trim().to_string())
+                                .filter(|t| !t.is_empty()),
                         },
                     )
                     .await
@@ -255,6 +275,10 @@ fn auth_shell(
                         <label class="field">
                             <span>"Name"</span>
                             <input prop:value=name on:input=move |ev| set_name.set(event_target_value(&ev))/>
+                        </label>
+                        <label class="field">
+                            <span>{move || if lang.get() == Lang::De { "Einladungscode (optional)" } else { "Invite code (optional)" }}</span>
+                            <input prop:value=invite on:input=move |ev| set_invite.set(event_target_value(&ev))/>
                         </label>
                     }.into_view()
                 } else {

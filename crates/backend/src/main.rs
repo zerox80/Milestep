@@ -1,10 +1,10 @@
 use std::{
     collections::HashMap,
     env,
-    net::TcpStream,
+    net::{IpAddr, SocketAddr, TcpStream},
     path::{Path as FsPath, PathBuf},
-    sync::LazyLock,
-    time::Duration as StdDuration,
+    sync::{Arc, LazyLock, Mutex},
+    time::{Duration as StdDuration, Instant},
 };
 
 use argon2::{
@@ -13,11 +13,11 @@ use argon2::{
 };
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Request, State},
     http::{
         header::{
-            CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, HOST, ORIGIN, SET_COOKIE,
-            X_CONTENT_TYPE_OPTIONS,
+            CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
+            REFERRER_POLICY, SET_COOKIE, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
         },
         HeaderMap, HeaderValue, Method, StatusCode,
     },
@@ -30,12 +30,12 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use hmac::{Hmac, Mac};
 use kowobau_shared::*;
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use serde::Serialize;
 use serde_json::json;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgConnection, PgPool};
-use tokio::{fs, io::AsyncWriteExt, net::TcpListener};
+use tokio::{fs, io::AsyncWriteExt, net::TcpListener, sync::Semaphore};
 use tokio_util::io::ReaderStream;
 use tower_http::{
     compression::CompressionLayer,
@@ -48,7 +48,17 @@ use uuid::Uuid;
 type HmacSha256 = Hmac<Sha256>;
 
 const COOKIE_NAME: &str = "kowobau_session";
+// __Host- locks the cookie to the exact host over HTTPS (requires Secure,
+// Path=/ and no Domain attribute, all of which build_cookie guarantees).
+const SECURE_COOKIE_NAME: &str = "__Host-kowobau_session";
 const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+const MAX_JSON_BODY_BYTES: usize = 64 * 1024;
+const AUTH_RATE_LIMIT_WINDOW: StdDuration = StdDuration::from_secs(60);
+const AUTH_RATE_LIMIT_MAX_ATTEMPTS: u32 = 10;
+const INVITE_TTL_DAYS: i64 = 14;
+// Bounds concurrent Argon2 work so unauthenticated login/register floods
+// cannot pin every core with password hashing.
+const MAX_CONCURRENT_PASSWORD_HASHES: usize = 4;
 const MAX_WORKSPACE_STORAGE_BYTES: i64 = 2 * 1024 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
     "pdf", "png", "jpg", "jpeg", "webp", "svg", "csv", "xlsx", "docx", "txt", "json", "zip", "dwg",
@@ -69,12 +79,20 @@ struct AppConfig {
     cookie_secure: bool,
     seed_demo: bool,
     max_workspace_storage_bytes: i64,
+    // When true (behind our nginx), the client IP for rate limiting is taken
+    // from X-Real-IP instead of the peer address.
+    trust_proxy: bool,
+    // When set (e.g. "https://kowobau.example.com"), state-changing requests
+    // must carry exactly this Origin, closing the scheme-blind host check.
+    public_origin: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct AppState {
     db: PgPool,
     cfg: AppConfig,
+    auth_limiter: Arc<Mutex<HashMap<IpAddr, (Instant, u32)>>>,
+    hash_permits: Arc<Semaphore>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +113,8 @@ enum AppError {
     BadRequest(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("too many requests, try again later")]
+    TooManyRequests,
     #[error("{0}")]
     Internal(String),
     #[error(transparent)]
@@ -115,6 +135,7 @@ impl IntoResponse for AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             AppError::Internal(_)
             | AppError::Sqlx(_)
             | AppError::Io(_)
@@ -169,14 +190,22 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("demo seed disabled (set KOWOBAU_SEED_DEMO=true to enable)");
     }
 
-    let state = AppState { db, cfg };
+    let state = AppState {
+        db,
+        cfg,
+        auth_limiter: Arc::new(Mutex::new(HashMap::new())),
+        hash_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_HASHES)),
+    };
     let app = build_router(state.clone());
 
     let listener = TcpListener::bind(&state.cfg.bind).await?;
     tracing::info!("KoWoBau-Planner listening on http://{}", state.cfg.bind);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
@@ -213,8 +242,20 @@ impl AppConfig {
                 "KOWOBAU_MAX_WORKSPACE_STORAGE_BYTES",
                 "CADENCE_MAX_WORKSPACE_STORAGE_BYTES",
             )
-            .and_then(|v| v.parse().ok())
+            // A typo must not silently fall back to the default quota.
+            .map(|v| {
+                v.parse().map_err(|_| {
+                    anyhow::anyhow!("KOWOBAU_MAX_WORKSPACE_STORAGE_BYTES must be an integer byte count, got {v:?}")
+                })
+            })
+            .transpose()?
             .unwrap_or(MAX_WORKSPACE_STORAGE_BYTES),
+            trust_proxy: env_var("KOWOBAU_TRUST_PROXY", "CADENCE_TRUST_PROXY")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+                .unwrap_or(false),
+            public_origin: env_var("KOWOBAU_PUBLIC_ORIGIN", "CADENCE_PUBLIC_ORIGIN")
+                .map(|v| v.trim_end_matches('/').to_string())
+                .filter(|v| !v.is_empty()),
         })
     }
 }
@@ -256,11 +297,16 @@ fn healthcheck_cli() -> anyhow::Result<()> {
 }
 
 fn build_router(state: AppState) -> Router {
+    let auth_rate_limit = middleware::from_fn_with_state(state.clone(), rate_limit_auth);
     let api = Router::new()
         .route("/health", get(health))
-        .route("/auth/register", post(register))
-        .route("/auth/login", post(login))
+        .route(
+            "/auth/register",
+            post(register).route_layer(auth_rate_limit.clone()),
+        )
+        .route("/auth/login", post(login).route_layer(auth_rate_limit))
         .route("/auth/logout", post(logout))
+        .route("/auth/logout-all", post(logout_all))
         .route("/auth/me", get(me))
         .route("/bootstrap", get(bootstrap))
         .route("/tasks", get(list_tasks).post(create_task))
@@ -275,15 +321,21 @@ fn build_router(state: AppState) -> Router {
             patch(update_subtask).delete(delete_subtask),
         )
         .route("/tasks/{id}/comments", post(create_comment))
-        .route("/tasks/{id}/attachments", post(upload_attachment))
+        .route(
+            "/tasks/{id}/attachments",
+            post(upload_attachment).route_layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
         .route("/attachments/{id}", get(download_attachment))
         .route("/notifications/{id}/read", post(read_notification))
         .route("/notifications/read-all", post(read_all_notifications))
         .route("/workspaces/{id}", patch(update_workspace))
         .route("/workspaces/{id}/invites", post(invite_member))
         .route("/memberships/{id}", patch(update_membership))
-        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
-        .layer(middleware::from_fn(enforce_same_origin))
+        .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            enforce_same_origin,
+        ))
         .with_state(state.clone());
 
     let index = state.cfg.static_dir.join("index.html");
@@ -292,32 +344,107 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .nest("/api", api)
         .fallback_service(spa)
+        .layer(middleware::from_fn(security_headers))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
 }
 
 /// CSRF defense-in-depth on top of SameSite=Lax: browser-sent state-changing
 /// requests must come from our own origin. Requests without an Origin header
-/// (curl, server-to-server) are allowed through.
-async fn enforce_same_origin(req: Request, next: Next) -> Result<Response, AppError> {
+/// (curl, server-to-server) are allowed through. With KOWOBAU_PUBLIC_ORIGIN
+/// set, the full origin (including scheme) must match exactly; otherwise we
+/// fall back to comparing the Origin host against the Host header.
+async fn enforce_same_origin(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
     if !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         if let Some(origin) = req.headers().get(ORIGIN).and_then(|v| v.to_str().ok()) {
-            let origin_host = host_only(origin.split_once("://").map_or(origin, |(_, a)| a));
-            let request_host = req
-                .headers()
-                .get(HOST)
-                .and_then(|v| v.to_str().ok())
-                .map(host_only)
-                .unwrap_or("");
-            if origin == "null"
-                || request_host.is_empty()
-                || !origin_host.eq_ignore_ascii_case(request_host)
-            {
-                return Err(AppError::Forbidden);
+            if let Some(expected) = &state.cfg.public_origin {
+                if !origin.eq_ignore_ascii_case(expected) {
+                    return Err(AppError::Forbidden);
+                }
+            } else {
+                let origin_host = host_only(origin.split_once("://").map_or(origin, |(_, a)| a));
+                let request_host = req
+                    .headers()
+                    .get(HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .map(host_only)
+                    .unwrap_or("");
+                if origin == "null"
+                    || request_host.is_empty()
+                    || !origin_host.eq_ignore_ascii_case(request_host)
+                {
+                    return Err(AppError::Forbidden);
+                }
             }
         }
     }
     Ok(next.run(req).await)
+}
+
+/// Fixed-window per-IP limiter for the unauthenticated auth endpoints. These
+/// trigger expensive Argon2 hashing and are the brute-force surface, so they
+/// get a much tighter budget than the rest of the API.
+async fn rate_limit_auth(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let ip = client_ip(&state, &req).ok_or(AppError::TooManyRequests)?;
+    {
+        let mut limiter = state.auth_limiter.lock().expect("limiter lock poisoned");
+        let now = Instant::now();
+        // Opportunistic pruning keeps the map from growing with one entry per
+        // IP ever seen.
+        limiter.retain(|_, (start, _)| now.duration_since(*start) < AUTH_RATE_LIMIT_WINDOW);
+        let entry = limiter.entry(ip).or_insert((now, 0));
+        if now.duration_since(entry.0) >= AUTH_RATE_LIMIT_WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        if entry.1 > AUTH_RATE_LIMIT_MAX_ATTEMPTS {
+            return Err(AppError::TooManyRequests);
+        }
+    }
+    Ok(next.run(req).await)
+}
+
+fn client_ip(state: &AppState, req: &Request) -> Option<IpAddr> {
+    if state.cfg.trust_proxy {
+        if let Some(ip) = req
+            .headers()
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse().ok())
+        {
+            return Some(ip);
+        }
+    }
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip())
+}
+
+const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+     style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; \
+     connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
+/// Defense-in-depth security headers so a directly exposed backend (without
+/// the nginx in front) still serves a hardened SPA.
+async fn security_headers(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    headers.insert(
+        REFERRER_POLICY,
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    res
 }
 
 /// Strips a `:port` suffix (and IPv6 brackets) from an authority string.
@@ -376,8 +503,31 @@ async fn register(
         ));
     }
 
+    // Invite lookup happens before the expensive hash so bad tokens fail fast.
+    let invite: Option<(Uuid, Uuid, String)> =
+        match payload
+            .invite_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            Some(token) => {
+                let row: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+                    "SELECT id, workspace_id, role FROM workspace_invites \
+                 WHERE token_hash = $1 AND expires_at > now()",
+                )
+                .bind(invite_token_hash(token))
+                .fetch_optional(&state.db)
+                .await?;
+                Some(row.ok_or_else(|| {
+                    AppError::BadRequest("invite code is invalid or expired".into())
+                })?)
+            }
+            None => None,
+        };
+
     let user_id = Uuid::new_v4();
-    let password_hash = hash_password(&payload.password)?;
+    let password_hash = hash_password_async(&state, payload.password.clone()).await?;
 
     let mut tx = state.db.begin().await?;
     let inserted =
@@ -395,17 +545,21 @@ async fn register(
         return Err(err.into());
     }
 
-    let invites: Vec<(Uuid, Uuid, String)> =
-        sqlx::query_as("SELECT id, workspace_id, role FROM workspace_invites WHERE email = $1")
-            .bind(&email)
-            .fetch_all(&mut *tx)
-            .await?;
-
-    let workspace_id = if invites.is_empty() {
-        create_workspace_for_user(&mut tx, user_id, payload.name.trim()).await?
-    } else {
-        for (invite_id, invite_workspace, role) in &invites {
-            role_from_db(role)?;
+    let workspace_id = match invite {
+        None => create_workspace_for_user(&mut tx, user_id, payload.name.trim()).await?,
+        Some((invite_id, invite_workspace, role)) => {
+            role_from_db(&role)?;
+            // Single-use: claim the row first; a concurrent registration with
+            // the same token loses and falls through to the error below.
+            let deleted = sqlx::query("DELETE FROM workspace_invites WHERE id = $1")
+                .bind(invite_id)
+                .execute(&mut *tx)
+                .await?;
+            if deleted.rows_affected() == 0 {
+                return Err(AppError::BadRequest(
+                    "invite code is invalid or expired".into(),
+                ));
+            }
             sqlx::query(
                 "INSERT INTO memberships (id, workspace_id, user_id, role, status, last_active_at) \
                  VALUES ($1, $2, $3, $4, 'active', now()) \
@@ -414,15 +568,11 @@ async fn register(
             .bind(Uuid::new_v4())
             .bind(invite_workspace)
             .bind(user_id)
-            .bind(role)
+            .bind(&role)
             .execute(&mut *tx)
             .await?;
-            sqlx::query("DELETE FROM workspace_invites WHERE id = $1")
-                .bind(invite_id)
-                .execute(&mut *tx)
-                .await?;
+            invite_workspace
         }
-        invites[0].1
     };
 
     record_audit(
@@ -453,11 +603,11 @@ async fn login(
             .await?;
     let Some(row) = row else {
         // Burn the same amount of time as a real verification (see DUMMY_PASSWORD_HASH).
-        let _ = verify_password(&payload.password, &DUMMY_PASSWORD_HASH);
+        let _ = verify_password_async(&state, payload.password, DUMMY_PASSWORD_HASH.clone()).await;
         return Err(AppError::Unauthorized);
     };
 
-    verify_password(&payload.password, &row.password_hash)?;
+    verify_password_async(&state, payload.password.clone(), row.password_hash.clone()).await?;
     let mut conn = state.db.acquire().await?;
     let session_id = create_session(&mut conn, row.id).await?;
 
@@ -482,6 +632,24 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
             .await?;
     }
 
+    let mut res = StatusCode::NO_CONTENT.into_response();
+    res.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&expired_cookie(&state.cfg)).expect("valid cookie"),
+    );
+    Ok(res)
+}
+
+/// Revokes every session of the current user ("log out everywhere").
+async fn logout_all(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(uuid_from_str(&ctx.user.id)?)
+        .execute(&state.db)
+        .await?;
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut().insert(
         SET_COOKIE,
@@ -762,6 +930,13 @@ async fn delete_task(
     let task_id = uuid_from_str(&id)?;
     let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
     let mut tx = state.db.begin().await?;
+    // Capture file paths before the cascade deletes the attachment rows, so
+    // the files can be removed from disk and don't leak storage forever.
+    let storage_paths: Vec<(String,)> =
+        sqlx::query_as("SELECT storage_path FROM attachments WHERE task_id = $1")
+            .bind(task_id)
+            .fetch_all(&mut *tx)
+            .await?;
     sqlx::query("DELETE FROM tasks WHERE id = $1")
         .bind(task_id)
         .execute(&mut *tx)
@@ -776,6 +951,11 @@ async fn delete_task(
     )
     .await?;
     tx.commit().await?;
+    for (path,) in storage_paths {
+        if let Err(err) = fs::remove_file(&path).await {
+            tracing::warn!(%path, %err, "could not remove attachment file of deleted task");
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1094,7 +1274,20 @@ async fn download_attachment(
     };
     assert_task_read(&state.db, user_id, task_id).await?;
 
-    let file = fs::File::open(&storage_path)
+    // Containment check: even if an insert path ever regresses, a stored path
+    // outside the upload directory must never be served.
+    let canonical = fs::canonicalize(&storage_path)
+        .await
+        .map_err(|_| AppError::NotFound)?;
+    let upload_root = fs::canonicalize(&state.cfg.upload_dir)
+        .await
+        .map_err(|_| AppError::NotFound)?;
+    if !canonical.starts_with(&upload_root) {
+        tracing::error!(%storage_path, "attachment path escapes the upload directory");
+        return Err(AppError::NotFound);
+    }
+
+    let file = fs::File::open(&canonical)
         .await
         .map_err(|_| AppError::NotFound)?;
     let mime = mime_guess::from_path(&file_name).first_or_octet_stream();
@@ -1194,7 +1387,7 @@ async fn invite_member(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(payload): Json<InviteMemberRequest>,
-) -> Result<StatusCode, AppError> {
+) -> Result<Json<InviteMemberResponse>, AppError> {
     let ctx = require_auth(&state, &headers).await?;
     let user_id = uuid_from_str(&ctx.user.id)?;
     let workspace_id = uuid_from_str(&id)?;
@@ -1257,16 +1450,25 @@ async fn invite_member(
         )
         .await?;
         tx.commit().await?;
-        return Ok(StatusCode::NO_CONTENT);
+        return Ok(Json(InviteMemberResponse {
+            invite_token: None,
+            invite_path: None,
+        }));
     }
+    // Single-use random token; only its hash is stored, so a database leak
+    // does not expose redeemable invites.
+    let token = generate_invite_token();
     sqlx::query(
-        "INSERT INTO workspace_invites (id, workspace_id, email, role, invited_by) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO workspace_invites (id, workspace_id, email, role, invited_by, token_hash, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(Uuid::new_v4())
     .bind(workspace_id)
     .bind(email)
     .bind(role_to_db(&payload.role))
     .bind(user_id)
+    .bind(invite_token_hash(&token))
+    .bind(Utc::now() + Duration::days(INVITE_TTL_DAYS))
     .execute(&state.db)
     .await?;
     record_audit(
@@ -1278,7 +1480,20 @@ async fn invite_member(
         Some(workspace_id),
     )
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(InviteMemberResponse {
+        invite_path: Some(format!("/?invite={token}")),
+        invite_token: Some(token),
+    }))
+}
+
+fn generate_invite_token() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn invite_token_hash(token: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()))
 }
 
 async fn update_membership(
@@ -1378,7 +1593,7 @@ fn parse_session_cookie(headers: &HeaderMap, cfg: &AppConfig) -> Result<Uuid, Ap
     let raw = cookie
         .split(';')
         .filter_map(|part| part.trim().split_once('='))
-        .find_map(|(name, value)| (name == COOKIE_NAME).then_some(value))
+        .find_map(|(name, value)| (name == cookie_name(cfg)).then_some(value))
         .ok_or(AppError::Unauthorized)?;
 
     let (session_id, signature) = raw.rsplit_once('.').ok_or(AppError::Unauthorized)?;
@@ -1402,12 +1617,21 @@ fn sign(cfg: &AppConfig, value: &str) -> Result<String, AppError> {
     Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
 }
 
+fn cookie_name(cfg: &AppConfig) -> &'static str {
+    if cfg.cookie_secure {
+        SECURE_COOKIE_NAME
+    } else {
+        COOKIE_NAME
+    }
+}
+
 fn build_cookie(cfg: &AppConfig, session_id: Uuid) -> Result<String, AppError> {
     let id = session_id.to_string();
     let signed = format!("{}.{}", id, sign(cfg, &id)?);
     let secure = if cfg.cookie_secure { "; Secure" } else { "" };
     Ok(format!(
-        "{COOKIE_NAME}={signed}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+        "{}={signed}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+        cookie_name(cfg),
         14 * 24 * 60 * 60,
         secure
     ))
@@ -1415,7 +1639,10 @@ fn build_cookie(cfg: &AppConfig, session_id: Uuid) -> Result<String, AppError> {
 
 fn expired_cookie(cfg: &AppConfig) -> String {
     let secure = if cfg.cookie_secure { "; Secure" } else { "" };
-    format!("{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}")
+    format!(
+        "{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}",
+        cookie_name(cfg)
+    )
 }
 
 fn json_with_cookie<T: Serialize>(
@@ -1429,6 +1656,34 @@ fn json_with_cookie<T: Serialize>(
         HeaderValue::from_str(&build_cookie(&state.cfg, session_id)?).expect("valid cookie"),
     );
     Ok(res)
+}
+
+/// Runs Argon2 hashing on a blocking thread, bounded by the global permit
+/// pool, so request floods cannot stall the async runtime or pin all cores.
+async fn hash_password_async(state: &AppState, password: String) -> Result<String, AppError> {
+    let _permit = state
+        .hash_permits
+        .acquire()
+        .await
+        .map_err(|_| AppError::Internal("hash semaphore closed".into()))?;
+    tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+}
+
+async fn verify_password_async(
+    state: &AppState,
+    password: String,
+    hash: String,
+) -> Result<(), AppError> {
+    let _permit = state
+        .hash_permits
+        .acquire()
+        .await
+        .map_err(|_| AppError::Internal("hash semaphore closed".into()))?;
+    tokio::task::spawn_blocking(move || verify_password(&password, &hash))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
 }
 
 fn hash_password(password: &str) -> Result<String, AppError> {
@@ -3167,6 +3422,8 @@ mod tests {
             cookie_secure: false,
             seed_demo: false,
             max_workspace_storage_bytes: MAX_WORKSPACE_STORAGE_BYTES,
+            trust_proxy: false,
+            public_origin: None,
         }
     }
 
@@ -3205,6 +3462,33 @@ mod tests {
             parse_session_cookie(&headers, &cfg),
             Err(AppError::Unauthorized)
         ));
+    }
+
+    #[test]
+    fn secure_cookie_uses_host_prefix_and_roundtrips() {
+        let mut cfg = test_config();
+        cfg.cookie_secure = true;
+        let session_id = Uuid::new_v4();
+        let cookie = build_cookie(&cfg, session_id).expect("cookie builds");
+        assert!(cookie.starts_with("__Host-kowobau_session="));
+        assert!(cookie.contains("; Secure"));
+        assert!(cookie.contains("Path=/"));
+        assert!(!cookie.contains("Domain="));
+        let headers = headers_with_cookie(&cookie);
+        assert_eq!(
+            parse_session_cookie(&headers, &cfg).expect("cookie parses"),
+            session_id
+        );
+        assert!(expired_cookie(&cfg).starts_with("__Host-kowobau_session=;"));
+    }
+
+    #[test]
+    fn invite_tokens_hash_deterministically_and_differ() {
+        let a = generate_invite_token();
+        let b = generate_invite_token();
+        assert_ne!(a, b);
+        assert_eq!(invite_token_hash(&a), invite_token_hash(&a));
+        assert_ne!(invite_token_hash(&a), invite_token_hash(&b));
     }
 
     #[test]

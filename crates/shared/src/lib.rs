@@ -236,6 +236,8 @@ pub struct RegisterRequest {
     pub name: String,
     pub email: String,
     pub password: String,
+    #[serde(default)]
+    pub invite_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,6 +308,14 @@ pub struct UpdateWorkspaceRequest {
 pub struct InviteMemberRequest {
     pub email: String,
     pub role: Role,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteMemberResponse {
+    /// Empty when the invitee already had an account and was added directly.
+    pub invite_token: Option<String>,
+    /// Relative URL that pre-fills the invite code on the register form.
+    pub invite_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
