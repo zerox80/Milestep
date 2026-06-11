@@ -963,6 +963,7 @@ fn admin_view(
     let (invite_role, set_invite_role) = create_signal(Role::Member);
     let (invite_result, set_invite_result) = create_signal::<Option<String>>(None);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+    let workspace_id_for_invite = workspace_id.clone();
     let invite = move |_| {
         if !can_admin {
             return;
@@ -979,7 +980,7 @@ fn admin_view(
         set_local_error.set(None);
         set_invite_result.set(None);
         let role = invite_role.get_untracked();
-        let workspace_id = workspace_id.clone();
+        let workspace_id = workspace_id_for_invite.clone();
         spawn_local(async move {
             match api_post::<_, InviteMemberResponse>(
                 &format!("/api/workspaces/{workspace_id}/invites"),
@@ -1082,6 +1083,49 @@ fn admin_view(
                     }.into_view()
                 } else {
                     view! { <p class="muted">{move || if lang.get() == Lang::De { "Nur Admins koennen Mitglieder verwalten." } else { "Only admins can manage members." }}</p> }.into_view()
+                }}
+            </section>
+            <section class="panel">
+                <h3>{move || if lang.get() == Lang::De { "Registrierte Accounts" } else { "Registered accounts" }}</h3>
+                {if can_admin {
+                    view! {
+                        {boot.registered_users.iter().map(|user| {
+                            let email = user.email.clone();
+                            let email_for_add = user.email.clone();
+                            let workspace_id_for_add = workspace_id.clone();
+                            let is_member = user.membership_id.is_some();
+                            let role = user.role.as_ref().map(|r| role_label(r, lang.get()).to_string()).unwrap_or_else(|| {
+                                if lang.get() == Lang::De { "Nicht im Workspace".into() } else { "Not in workspace".into() }
+                            });
+                            let created = if lang.get() == Lang::De { user.created_label_de.clone() } else { user.created_label_en.clone() };
+                            view! {
+                                <div class="registered-row">
+                                    <span class="avatar tiny">{user.initials.clone()}</span>
+                                    <span><strong>{user.name.clone()}</strong><small>{email}</small></span>
+                                    <span>{role}</span>
+                                    <small>{created}</small>
+                                    {if !is_member {
+                                        view! {
+                                            <button class="link-button" on:click=move |_| {
+                                                add_existing_user_to_workspace(
+                                                    workspace_id_for_add.clone(),
+                                                    email_for_add.clone(),
+                                                    Role::Member,
+                                                    lang,
+                                                    set_data,
+                                                    set_error,
+                                                );
+                                            }>{move || if lang.get() == Lang::De { "Hinzufuegen" } else { "Add" }}</button>
+                                        }.into_view()
+                                    } else {
+                                        view! { <b>{move || if lang.get() == Lang::De { "Mitglied" } else { "Member" }}</b> }.into_view()
+                                    }}
+                                </div>
+                            }
+                        }).collect_view()}
+                    }.into_view()
+                } else {
+                    view! { <p class="muted">{move || if lang.get() == Lang::De { "Nur Admins sehen registrierte Accounts." } else { "Only admins can view registered accounts." }}</p> }.into_view()
                 }}
             </section>
             <section class="panel">
@@ -1702,6 +1746,34 @@ fn update_member_role(
         {
             Ok(_) => refresh_bootstrap(set_data, set_error).await,
             Err(err) => set_error.set(Some(err.message)),
+        }
+    });
+}
+
+fn add_existing_user_to_workspace(
+    workspace_id: String,
+    email: String,
+    role: Role,
+    lang: ReadSignal<Lang>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) {
+    spawn_local(async move {
+        match api_post::<_, InviteMemberResponse>(
+            &format!("/api/workspaces/{workspace_id}/invites"),
+            &InviteMemberRequest { email, role },
+        )
+        .await
+        {
+            Ok(_) => refresh_bootstrap(set_data, set_error).await,
+            Err(err) => {
+                let prefix = if lang.get_untracked() == Lang::De {
+                    "Konnte User nicht hinzufuegen"
+                } else {
+                    "Could not add user"
+                };
+                set_error.set(Some(format!("{prefix}: {}", err.message)));
+            }
         }
     });
 }

@@ -1918,6 +1918,16 @@ struct UserRow {
     name: String,
 }
 
+#[derive(Debug, FromRow)]
+struct RegisteredUserRow {
+    id: Uuid,
+    email: String,
+    name: String,
+    created_at: DateTime<Utc>,
+    membership_id: Option<Uuid>,
+    role: Option<String>,
+}
+
 impl From<UserRow> for UserDto {
     fn from(row: UserRow) -> Self {
         Self {
@@ -2169,13 +2179,20 @@ async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<BootstrapDto, App
     let milestones = fetch_milestones(db, project_id).await?;
     let notifications = fetch_notifications(db, user_id).await?;
     let audit_events = fetch_audit_events(db, membership.workspace_id).await?;
+    let current_role = role_from_db(&membership.role)?;
+    let registered_users = if current_role.can_admin() {
+        fetch_registered_users(db, membership.workspace_id).await?
+    } else {
+        Vec::new()
+    };
 
     Ok(BootstrapDto {
         current_user: user,
         workspace,
         project,
-        current_role: role_from_db(&membership.role)?,
+        current_role,
         members,
+        registered_users,
         statuses,
         tasks,
         tickets,
@@ -2267,6 +2284,38 @@ async fn fetch_member(db: &PgPool, membership_id: Uuid) -> Result<MemberDto, App
         .into_iter()
         .find(|m| m.id == membership_id.to_string())
         .ok_or(AppError::NotFound)
+}
+
+async fn fetch_registered_users(
+    db: &PgPool,
+    workspace_id: Uuid,
+) -> Result<Vec<RegisteredUserDto>, AppError> {
+    let rows: Vec<RegisteredUserRow> = sqlx::query_as(
+        "SELECT u.id, u.email, u.name, u.created_at, \
+                m.id AS membership_id, m.role \
+         FROM users u \
+         LEFT JOIN memberships m ON m.user_id = u.id \
+             AND m.workspace_id = $1 AND m.status = 'active' \
+         ORDER BY u.created_at DESC, u.email",
+    )
+    .bind(workspace_id)
+    .fetch_all(db)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(RegisteredUserDto {
+                id: row.id.to_string(),
+                email: row.email,
+                initials: initials(&row.name),
+                name: row.name,
+                membership_id: row.membership_id.map(|id| id.to_string()),
+                role: row.role.as_deref().map(role_from_db).transpose()?,
+                created_label_de: relative_label(row.created_at, "de"),
+                created_label_en: relative_label(row.created_at, "en"),
+            })
+        })
+        .collect()
 }
 
 const TASK_SELECT: &str =

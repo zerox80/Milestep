@@ -81,6 +81,18 @@ pub struct UserDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisteredUserDto {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+    pub initials: String,
+    pub membership_id: Option<String>,
+    pub role: Option<Role>,
+    pub created_label_de: String,
+    pub created_label_en: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceDto {
     pub id: String,
     pub name: String,
@@ -246,6 +258,7 @@ pub struct BootstrapDto {
     pub project: ProjectDto,
     pub current_role: Role,
     pub members: Vec<MemberDto>,
+    pub registered_users: Vec<RegisteredUserDto>,
     pub statuses: Vec<StatusDto>,
     pub tasks: Vec<TaskDto>,
     pub tickets: Vec<TicketDto>,
