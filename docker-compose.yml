@@ -4,11 +4,11 @@ services:
       context: .
       target: backend-runtime
     environment:
-      DATABASE_URL: postgres://kowobau:kowobau@postgres:5432/kowobau
-      KOWOBAU_SESSION_SECRET: change-me-in-production-compose-secret
-      KOWOBAU_BIND: 0.0.0.0:8080
-      KOWOBAU_UPLOAD_DIR: /app/uploads
-      KOWOBAU_COOKIE_SECURE: "false"
+      DATABASE_URL: ${DATABASE_URL:-postgres://kowobau:kowobau@postgres:5432/kowobau}
+      KOWOBAU_SESSION_SECRET: ${KOWOBAU_SESSION_SECRET:-change-me-in-production-compose-secret}
+      KOWOBAU_BIND: ${KOWOBAU_BIND:-0.0.0.0:8080}
+      KOWOBAU_UPLOAD_DIR: ${KOWOBAU_UPLOAD_DIR:-/app/uploads}
+      KOWOBAU_COOKIE_SECURE: ${KOWOBAU_COOKIE_SECURE:-false}
     volumes:
       - uploads:/app/uploads
     depends_on:
@@ -40,9 +40,9 @@ services:
     ports:
       - "127.0.0.1:${KOWOBAU_POSTGRES_PORT:-5432}:5432"
     environment:
-      POSTGRES_USER: kowobau
-      POSTGRES_PASSWORD: kowobau
-      POSTGRES_DB: kowobau
+      POSTGRES_USER: ${POSTGRES_USER:-kowobau}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kowobau}
+      POSTGRES_DB: ${POSTGRES_DB:-kowobau}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

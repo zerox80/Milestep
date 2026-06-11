@@ -27,6 +27,7 @@ cargo build --release -p kowobau-backend
 With Docker available:
 
 ```powershell
+Copy-Item .env.example .env
 docker compose up --build
 ```
 
