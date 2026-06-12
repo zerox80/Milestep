@@ -1918,13 +1918,15 @@ fn task_detail(
                 <div class="attachments">
                     {attachments.into_iter().map(|a| attachment_view(a, lang)).collect_view()}
                 </div>
-                {can_edit.then(|| view! {
+                {move || (can_edit && editing.get()).then(|| {
+                    let task_id = task_id_for_upload.clone();
+                    view! {
                     <div class="upload-row">
-                        <input type="file" multiple style="display:none" node_ref=file_input on:change=move |ev| {
+                        <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.svg,.csv,.xlsx,.docx,.txt,.json,.zip,.dwg,.ifc" style="display:none" node_ref=file_input on:change=move |ev| {
                             let input = event_target::<web_sys::HtmlInputElement>(&ev);
                             if let Some(files) = input.files() {
                                 if files.length() > 0 {
-                                    upload_attachments(task_id_for_upload.clone(), files, set_uploading, set_data, set_error);
+                                    upload_attachments(task_id.clone(), files, set_uploading, set_data, set_error);
                                 }
                             }
                             input.set_value("");
@@ -1942,6 +1944,7 @@ fn task_detail(
                             }}
                         </button>
                     </div>
+                    }
                 })}
             </section>
             <section>
