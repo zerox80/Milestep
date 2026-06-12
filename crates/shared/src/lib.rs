@@ -73,6 +73,28 @@ pub enum AttachmentKind {
     Image,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Recurrence {
+    Daily,
+    Weekly,
+    Biweekly,
+    Monthly,
+}
+
+/// Lightweight realtime event broadcast to all sockets of a workspace.
+/// Carries no entity data: receivers refetch the bootstrap payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceEventDto {
+    pub workspace_id: String,
+    /// Coarse change category: "task", "ticket", "comment", "attachment",
+    /// "workspace" or "resync" (sent when a receiver lagged behind).
+    pub topic: String,
+    /// Random per-tab id of the client that caused the change, so that tab
+    /// can skip the refetch for its own (already locally applied) mutations.
+    pub client_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserDto {
     pub id: String,
@@ -183,6 +205,7 @@ pub struct TaskDto {
     pub start_date: Option<String>,
     pub due_date: Option<String>,
     pub phase: String,
+    pub recurrence: Option<Recurrence>,
     pub assignee_ids: Vec<String>,
     pub dependency_ids: Vec<String>,
     pub subtasks: Vec<SubtaskDto>,
@@ -299,6 +322,8 @@ pub struct CreateTaskRequest {
     pub start_date: Option<String>,
     pub due_date: Option<String>,
     pub phase: String,
+    #[serde(default)]
+    pub recurrence: Option<Recurrence>,
     pub assignee_ids: Vec<String>,
     pub subtasks: Vec<String>,
 }
@@ -338,6 +363,8 @@ pub struct UpdateTaskRequest {
     #[serde(default, deserialize_with = "double_option")]
     pub due_date: Option<Option<String>>,
     pub phase: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub recurrence: Option<Option<Recurrence>>,
     pub assignee_ids: Option<Vec<String>>,
 }
 

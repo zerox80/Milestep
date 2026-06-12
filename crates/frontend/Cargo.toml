@@ -7,7 +7,9 @@ authors.workspace = true
 
 [dependencies]
 console_error_panic_hook = "0.1"
-gloo-net = "0.6"
+futures-util = "0.3"
+gloo-net = { version = "0.6", features = ["http", "websocket", "json"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
 kowobau-shared = { path = "../shared" }
 leptos = { version = "0.6.15", features = ["csr"] }
@@ -19,8 +21,12 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
   "DragEvent",
   "Event",
+  "File",
+  "FileList",
+  "FormData",
   "HtmlInputElement",
   "HtmlSelectElement",
   "HtmlTextAreaElement",
+  "Location",
   "RequestCredentials",
 ] }

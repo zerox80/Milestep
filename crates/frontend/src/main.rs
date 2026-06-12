@@ -81,6 +81,11 @@ fn AppRoot() -> impl IntoView {
     let (drag_task, set_drag_task) = create_signal::<Option<String>>(None);
     let (loading, set_loading) = create_signal(true);
     let (error, set_error) = create_signal::<Option<String>>(None);
+    // Counts open editors (modals, edit mode, comment drafts). Realtime
+    // refetches wait until it drops to zero so a background set_data does not
+    // re-render the dashboard and wipe in-progress input.
+    let realtime_hold = create_rw_signal(0i32);
+    provide_context(RealtimeHold(realtime_hold));
 
     let reload = move || {
         set_loading.set(true);
@@ -107,6 +112,17 @@ fn AppRoot() -> impl IntoView {
     create_effect(move |_| {
         if loading.get_untracked() && data.get_untracked().is_none() {
             reload();
+        }
+    });
+
+    // Live updates: one WebSocket connection per login. The loop ends itself
+    // on logout (data becomes None) and is restarted here after the next
+    // successful bootstrap.
+    let realtime_running = store_value(false);
+    create_effect(move |_| {
+        if data.get().is_some() && !realtime_running.get_value() {
+            realtime_running.set_value(true);
+            start_realtime(data, realtime_hold, realtime_running, set_data, set_error);
         }
     });
 
@@ -752,8 +768,8 @@ fn ticket_view(
             </div>
             <div class="table-panel">
                 <div class="ticket-head">
-                    <span>{move || if lang.get() == Lang::De { "Ticket" } else { "Ticket" }}</span>
-                    <span>{move || if lang.get() == Lang::De { "Status" } else { "Status" }}</span>
+                    <span>"Ticket"</span>
+                    <span>"Status"</span>
                     <span>{move || if lang.get() == Lang::De { "Prioritaet" } else { "Priority" }}</span>
                     <span>{move || if lang.get() == Lang::De { "Melder" } else { "Requester" }}</span>
                     <span>{move || if lang.get() == Lang::De { "Zuweisung" } else { "Assignee" }}</span>
@@ -1231,8 +1247,10 @@ fn create_task_modal(
             .map(|m| m.user_id.clone())
             .unwrap_or_default(),
     );
+    let (recurrence, set_recurrence) = create_signal::<Option<Recurrence>>(None);
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+    hold_realtime_while(|| true);
 
     let create = move |_| {
         if title.get_untracked().trim().is_empty() {
@@ -1256,6 +1274,7 @@ fn create_task_modal(
             start_date: Some(today_iso()),
             due_date: Some(due_date.get_untracked()),
             phase: phase.get_untracked(),
+            recurrence: recurrence.get_untracked(),
             assignee_ids: vec![assignee_id.get_untracked()],
             subtasks: vec![],
         };
@@ -1322,6 +1341,9 @@ fn create_task_modal(
                         <option value="ausfuehrung" selected>{move || if lang.get() == Lang::De { "Ausführung" } else { "Execution" }}</option>
                         <option value="abnahme">{move || if lang.get() == Lang::De { "Abnahme" } else { "Handover" }}</option>
                     </select>
+                    <select on:change=move |ev| set_recurrence.set(recurrence_from_value(&select_value(&ev)))>
+                        {recurrence_options(None, lang)}
+                    </select>
                 </div>
                 <footer>
                     <button class="btn ghost" on:click=move |_| set_show_create.set(false)>{move || if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }}</button>
@@ -1347,6 +1369,7 @@ fn create_ticket_modal(
     let (assignee_id, set_assignee_id) = create_signal(String::new());
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+    hold_realtime_while(|| true);
 
     let create = move |_| {
         if title.get_untracked().trim().is_empty() {
@@ -1456,6 +1479,9 @@ fn ticket_detail(
         create_signal(ticket.assignee_id.clone().unwrap_or_default());
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+    // The whole ticket drawer is an edit form; a background refetch would
+    // re-render it and discard in-progress changes.
+    hold_realtime_while(|| true);
 
     let ticket_id_for_save = ticket.id.clone();
     let save = move |_| {
@@ -1599,8 +1625,16 @@ fn task_detail(
     let (phase_edit, set_phase_edit) = create_signal(task.phase.clone());
     let (assignee_edit, set_assignee_edit) =
         create_signal(task.assignee_ids.first().cloned().unwrap_or_default());
+    let (recurrence_edit, set_recurrence_edit) = create_signal(task.recurrence);
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+    let (uploading, set_uploading) = create_signal(false);
+    let file_input = create_node_ref::<html::Input>();
+    let (mention_open, set_mention_open) = create_signal(false);
+    let (mention_index, set_mention_index) = create_signal(0usize);
+    let mention_members = store_value(boot.members.clone());
+    // Editing or a half-typed comment must not be wiped by a background refetch.
+    hold_realtime_while(move || editing.get() || !comment.get().trim().is_empty());
 
     let status_label = boot
         .statuses
@@ -1617,16 +1651,19 @@ fn task_detail(
         .map(|d| fmt_date(d, lang.get()))
         .unwrap_or_else(|| "-".into());
     let priority = priority_label(&task.priority, lang.get()).to_string();
+    let task_recurrence = task.recurrence;
     let project_line = format!("{} / {}", task.tag, boot.project.name);
     let pct = subtask_pct(&task);
     let subtasks = task.subtasks.clone();
     let attachments = task.attachments.clone();
     let comments = task.comments.clone();
+    let can_edit = boot.current_role.can_edit();
     let task_id_base = task.id.clone();
-    let task_id_for_comment = task.id.clone();
+    let task_id_for_upload = task.id.clone();
     let statuses_for_status_options = boot.statuses.clone();
     let members_for_display = boot.members.clone();
     let members_for_assign = boot.members.clone();
+    let member_names: Vec<String> = boot.members.iter().map(|m| m.name.clone()).collect();
 
     let task_id_for_save = task.id.clone();
     let save = move |_| {
@@ -1657,6 +1694,7 @@ fn task_detail(
             start_date: None,
             due_date: Some((!due_date.trim().is_empty()).then_some(due_date)),
             phase: Some(phase_edit.get_untracked()),
+            recurrence: Some(recurrence_edit.get_untracked()),
             assignee_ids: Some(assignee_ids),
         };
         let task_id = task_id_for_save.clone();
@@ -1710,6 +1748,40 @@ fn task_detail(
     let reset_due = task.due_date.clone().unwrap_or_default();
     let reset_phase = task.phase.clone();
     let reset_assignee = task.assignee_ids.first().cloned().unwrap_or_default();
+    let reset_recurrence = task.recurrence;
+
+    let mention_candidates = move || -> Vec<MemberDto> {
+        let value = comment.get();
+        let Some((_, query)) = mention_query(&value) else {
+            return Vec::new();
+        };
+        let query = query.to_lowercase();
+        mention_members.with_value(|members| {
+            members
+                .iter()
+                .filter(|m| m.name.to_lowercase().contains(&query))
+                .cloned()
+                .collect()
+        })
+    };
+    let pick_mention = move |name: String| {
+        let value = comment.get_untracked();
+        if let Some((at, _)) = mention_query(&value) {
+            set_comment.set(format!("{}@{name} ", &value[..at]));
+        }
+        set_mention_open.set(false);
+        set_mention_index.set(0);
+    };
+    let task_id_for_comment_submit = task.id.clone();
+    let submit_comment = move || {
+        let body = comment.get_untracked();
+        if !body.trim().is_empty() {
+            add_comment(task_id_for_comment_submit.clone(), body, set_data, set_error);
+            set_comment.set(String::new());
+            set_mention_open.set(false);
+        }
+    };
+    let submit_comment_for_button = submit_comment.clone();
 
     view! {
         <div class="drawer-backdrop" on:click=move |_| set_open_task.set(None)></div>
@@ -1761,6 +1833,7 @@ fn task_detail(
                 let current_assignee = assignee_edit.get_untracked();
                 let current_priority = priority_edit.get_untracked();
                 let current_phase = phase_edit.get_untracked();
+                let current_recurrence = recurrence_edit.get_untracked();
                 view! {
                     <div class="detail-meta">
                         <span>
@@ -1787,12 +1860,18 @@ fn task_detail(
                             </select>
                         </span>
                         <span>
-                            <small>{move || if lang.get() == Lang::De { "Phase" } else { "Phase" }}</small>
+                            <small>"Phase"</small>
                             <select on:change=move |ev| set_phase_edit.set(select_value(&ev))>
                                 <option value="planung" selected=current_phase == "planung">{move || if lang.get() == Lang::De { "Planung" } else { "Planning" }}</option>
                                 <option value="vergabe" selected=current_phase == "vergabe">{move || if lang.get() == Lang::De { "Vergabe" } else { "Tendering" }}</option>
                                 <option value="ausfuehrung" selected=current_phase == "ausfuehrung">{move || if lang.get() == Lang::De { "Ausfuehrung" } else { "Execution" }}</option>
                                 <option value="abnahme" selected=current_phase == "abnahme">{move || if lang.get() == Lang::De { "Abnahme" } else { "Handover" }}</option>
+                            </select>
+                        </span>
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Wiederholung" } else { "Repeat" }}</small>
+                            <select on:change=move |ev| set_recurrence_edit.set(recurrence_from_value(&select_value(&ev)))>
+                                {recurrence_options(current_recurrence, lang)}
                             </select>
                         </span>
                     </div>
@@ -1803,6 +1882,7 @@ fn task_detail(
                         <span><small>{move || if lang.get() == Lang::De { "Zuweisen" } else { "Assign" }}</small>{assignee_avatars(&assignees, &members_for_display)}</span>
                         <span><small>{move || if lang.get() == Lang::De { "Faelligkeit" } else { "Due date" }}</small><b>{due.clone()}</b></span>
                         <span><small>{move || if lang.get() == Lang::De { "Prioritaet" } else { "Priority" }}</small><b>{priority.clone()}</b></span>
+                        <span><small>{move || if lang.get() == Lang::De { "Wiederholung" } else { "Repeat" }}</small><b>{move || recurrence_label(task_recurrence.as_ref(), lang.get())}</b></span>
                         <span><small>{move || if lang.get() == Lang::De { "Projekt" } else { "Project" }}</small><b>{project_line.clone()}</b></span>
                     </div>
                 }.into_view()
@@ -1835,25 +1915,107 @@ fn task_detail(
             </section>
             <section>
                 <h3>{move || if lang.get() == Lang::De { "Anhaenge" } else { "Attachments" }}</h3>
-                <div class="chips">
-                    {attachments.into_iter().map(|a| view! { <a class="file-chip" href=format!("/api/attachments/{}", a.id) download>"Datei "{a.file_name}<small>{a.size_label}</small></a> }).collect_view()}
+                <div class="attachments">
+                    {attachments.into_iter().map(|a| attachment_view(a, lang)).collect_view()}
                 </div>
+                {can_edit.then(|| view! {
+                    <div class="upload-row">
+                        <input type="file" multiple style="display:none" node_ref=file_input on:change=move |ev| {
+                            let input = event_target::<web_sys::HtmlInputElement>(&ev);
+                            if let Some(files) = input.files() {
+                                if files.length() > 0 {
+                                    upload_attachments(task_id_for_upload.clone(), files, set_uploading, set_data, set_error);
+                                }
+                            }
+                            input.set_value("");
+                        }/>
+                        <button class="btn ghost" disabled=uploading on:click=move |_| {
+                            if let Some(input) = file_input.get_untracked() {
+                                input.click();
+                            }
+                        }>
+                            {move || match (uploading.get(), lang.get() == Lang::De) {
+                                (true, true) => "Lädt hoch...",
+                                (true, false) => "Uploading...",
+                                (false, true) => "+ Datei hochladen",
+                                (false, false) => "+ Upload file",
+                            }}
+                        </button>
+                    </div>
+                })}
             </section>
             <section>
                 <h3>{move || if lang.get() == Lang::De { "Kommentare" } else { "Comments" }}</h3>
                 {comments.into_iter().map(|c| {
                     let created = if lang.get() == Lang::De { c.created_label_de } else { c.created_label_en };
-                    view! { <div class="comment"><span class="avatar tiny">{c.author_initials}</span><p><strong>{c.author_name}</strong><br/>{c.body}</p><small>{created}</small></div> }
+                    let body = comment_body_view(&c.body, &member_names);
+                    view! { <div class="comment"><span class="avatar tiny">{c.author_initials}</span><p><strong>{c.author_name}</strong><br/>{body}</p><small>{created}</small></div> }
                 }).collect_view()}
                 <div class="comment-box">
-                    <input placeholder=move || if lang.get() == Lang::De { "Kommentar schreiben..." } else { "Write a comment..." } prop:value=comment on:input=move |ev| set_comment.set(event_target_value(&ev))/>
-                    <button on:click=move |_| {
-                        let body = comment.get_untracked();
-                        if !body.trim().is_empty() {
-                            add_comment(task_id_for_comment.clone(), body, set_data, set_error);
-                            set_comment.set(String::new());
+                    {move || {
+                        let candidates = mention_candidates();
+                        (mention_open.get() && !candidates.is_empty()).then(|| view! {
+                            <div class="mention-pop">
+                                {candidates.into_iter().enumerate().map(|(i, m)| {
+                                    let name = m.name.clone();
+                                    view! {
+                                        <button type="button" class="mention-item" class:active=move || mention_index.get() == i
+                                            on:mousedown=move |ev| {
+                                                // Pick before the input loses focus.
+                                                ev.prevent_default();
+                                                pick_mention(name.clone());
+                                            }>
+                                            <span class="avatar tiny">{m.initials}</span>
+                                            <span class="mention-name">{m.name}</span>
+                                            <small>{m.email}</small>
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        })
+                    }}
+                    <input
+                        placeholder=move || if lang.get() == Lang::De { "Kommentar schreiben... (@ erwähnt)" } else { "Write a comment... (@ mentions)" }
+                        prop:value=comment
+                        on:input=move |ev| {
+                            let value = event_target_value(&ev);
+                            set_mention_open.set(mention_query(&value).is_some());
+                            set_mention_index.set(0);
+                            set_comment.set(value);
                         }
-                    }>"Enter"</button>
+                        on:keydown=move |ev| {
+                            // The popup only counts as active while it has
+                            // candidates; a query without matches must not
+                            // swallow Enter (the user wants to submit).
+                            let candidates = if mention_open.get_untracked() {
+                                mention_candidates()
+                            } else {
+                                Vec::new()
+                            };
+                            if !candidates.is_empty() {
+                                match ev.key().as_str() {
+                                    "ArrowDown" => {
+                                        ev.prevent_default();
+                                        set_mention_index.update(|i| *i = (*i + 1) % candidates.len());
+                                    }
+                                    "ArrowUp" => {
+                                        ev.prevent_default();
+                                        set_mention_index.update(|i| *i = (*i + candidates.len() - 1) % candidates.len());
+                                    }
+                                    "Enter" | "Tab" => {
+                                        ev.prevent_default();
+                                        let index = mention_index.get_untracked().min(candidates.len() - 1);
+                                        pick_mention(candidates[index].name.clone());
+                                    }
+                                    "Escape" => set_mention_open.set(false),
+                                    _ => {}
+                                }
+                            } else if ev.key() == "Enter" {
+                                submit_comment();
+                            }
+                        }
+                    />
+                    <button on:click=move |_| submit_comment_for_button()>"Enter"</button>
                 </div>
             </section>
             <section class="drawer-edit-actions" style=move || if editing.get() { "".to_string() } else { "display:none".to_string() }>
@@ -1866,6 +2028,7 @@ fn task_detail(
                     set_due_date_edit.set(reset_due.clone());
                     set_phase_edit.set(reset_phase.clone());
                     set_assignee_edit.set(reset_assignee.clone());
+                    set_recurrence_edit.set(reset_recurrence);
                     set_local_error.set(None);
                     set_editing.set(false);
                 }>{move || if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }}</button>
@@ -2018,6 +2181,7 @@ fn task_card(
     let tag = task.tag.clone();
     let prio_class = format!("prio {}", priority_class(&task.priority));
     let title = task_title(&task, lang.get());
+    let recurring = task.recurrence.is_some();
     let due = task
         .due_date
         .as_deref()
@@ -2028,7 +2192,13 @@ fn task_card(
         <article class="task-card" draggable="true"
             on:dragstart=move |_| set_drag_task.set(Some(drag_id.clone()))
             on:click=move |_| set_open_task.set(Some(open_id.clone()))>
-            <div class="task-tags"><span class=tag_class>{tag}</span><b class=prio_class></b></div>
+            <div class="task-tags">
+                <span class=tag_class>{tag}</span>
+                {recurring.then(|| view! {
+                    <span class="recur-mark" title=move || if lang.get() == Lang::De { "Wiederkehrende Aufgabe" } else { "Recurring task" }>"↻"</span>
+                })}
+                <b class=prio_class></b>
+            </div>
             <h3>{title}</h3>
             <div class="mini-progress"><i style=format!("width:{pct}%")></i></div>
             <footer>
@@ -2404,7 +2574,25 @@ async fn api_get<T: DeserializeOwned>(url: &str) -> Result<T, ApiError> {
 async fn api_post<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Result<T, ApiError> {
     let response = Request::post(url)
         .credentials(RequestCredentials::SameOrigin)
+        .header("x-client-id", &client_id())
         .json(body)
+        .map_err(ApiError::network)?
+        .send()
+        .await
+        .map_err(ApiError::network)?;
+    decode_response(response).await
+}
+
+async fn api_post_form<T: DeserializeOwned>(
+    url: &str,
+    form: web_sys::FormData,
+) -> Result<T, ApiError> {
+    // No explicit content type: the browser sets multipart/form-data with the
+    // correct boundary itself.
+    let response = Request::post(url)
+        .credentials(RequestCredentials::SameOrigin)
+        .header("x-client-id", &client_id())
+        .body(form)
         .map_err(ApiError::network)?
         .send()
         .await
@@ -2415,6 +2603,7 @@ async fn api_post<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Res
 async fn api_patch<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Result<T, ApiError> {
     let response = Request::patch(url)
         .credentials(RequestCredentials::SameOrigin)
+        .header("x-client-id", &client_id())
         .json(body)
         .map_err(ApiError::network)?
         .send()
@@ -2426,6 +2615,7 @@ async fn api_patch<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Re
 async fn api_empty(url: &str) -> Result<(), ApiError> {
     let response = Request::post(url)
         .credentials(RequestCredentials::SameOrigin)
+        .header("x-client-id", &client_id())
         .send()
         .await
         .map_err(ApiError::network)?;
@@ -2439,6 +2629,7 @@ async fn api_empty(url: &str) -> Result<(), ApiError> {
 async fn api_delete_empty(url: &str) -> Result<(), ApiError> {
     let response = Request::delete(url)
         .credentials(RequestCredentials::SameOrigin)
+        .header("x-client-id", &client_id())
         .send()
         .await
         .map_err(ApiError::network)?;
@@ -2467,6 +2658,296 @@ fn error_from_body(response: &gloo_net::http::Response, text: Option<String>) ->
             .map(|e| e.error)
             .unwrap_or(text),
     }
+}
+
+thread_local! {
+    // Random per-tab id. Sent with every mutation (X-Client-Id) and the WS
+    // handshake so this tab can skip refetching for its own changes.
+    static CLIENT_ID: String = format!(
+        "{:08x}{:08x}",
+        (js_sys::Math::random() * f64::from(u32::MAX)) as u32,
+        (js_sys::Math::random() * f64::from(u32::MAX)) as u32,
+    );
+    static REFETCH_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn client_id() -> String {
+    CLIENT_ID.with(Clone::clone)
+}
+
+/// Context wrapper around the editor-hold counter (see AppRoot).
+#[derive(Clone, Copy)]
+struct RealtimeHold(RwSignal<i32>);
+
+/// Keeps realtime refetches paused while `active()` is true. Call once per
+/// component; releases automatically when the component is removed.
+fn hold_realtime_while(active: impl Fn() -> bool + 'static) {
+    let Some(RealtimeHold(hold)) = use_context::<RealtimeHold>() else {
+        return;
+    };
+    let held = store_value(false);
+    create_effect(move |_| {
+        let active = active();
+        if active && !held.get_value() {
+            held.set_value(true);
+            hold.update(|v| *v += 1);
+        } else if !active && held.get_value() {
+            held.set_value(false);
+            hold.update(|v| *v -= 1);
+        }
+    });
+    on_cleanup(move || {
+        if held.get_value() {
+            held.set_value(false);
+            hold.update(|v| *v -= 1);
+        }
+    });
+}
+
+/// Coalesces bursts of realtime events into a single background bootstrap
+/// refetch, deferred while any editor is open.
+fn schedule_refetch(
+    data: ReadSignal<Option<BootstrapDto>>,
+    hold: RwSignal<i32>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) {
+    if REFETCH_PENDING.with(|p| p.replace(true)) {
+        return;
+    }
+    spawn_local(async move {
+        gloo_timers::future::TimeoutFuture::new(400).await;
+        while hold.get_untracked() > 0 {
+            gloo_timers::future::TimeoutFuture::new(1_000).await;
+        }
+        REFETCH_PENDING.with(|p| p.set(false));
+        if data.get_untracked().is_some() {
+            refresh_bootstrap(set_data, set_error).await;
+        }
+    });
+}
+
+/// Connects to /api/ws and triggers a debounced refetch whenever another
+/// client changes something in the workspace. Reconnects with exponential
+/// backoff and stops once the user is logged out.
+fn start_realtime(
+    data: ReadSignal<Option<BootstrapDto>>,
+    hold: RwSignal<i32>,
+    running: StoredValue<bool>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) {
+    spawn_local(async move {
+        use futures_util::StreamExt;
+
+        let mut backoff_ms = 1_000u32;
+        loop {
+            if data.try_get_untracked().flatten().is_none() {
+                break;
+            }
+            let url = match websocket_url() {
+                Some(url) => url,
+                None => break,
+            };
+            let connected_at = js_sys::Date::now();
+            if let Ok(mut socket) = gloo_net::websocket::futures::WebSocket::open(&url) {
+                while let Some(Ok(message)) = socket.next().await {
+                    backoff_ms = 1_000;
+                    if let gloo_net::websocket::Message::Text(text) = message {
+                        if let Ok(event) = serde_json::from_str::<WorkspaceEventDto>(&text) {
+                            if event.client_id.as_deref() == Some(client_id().as_str()) {
+                                continue;
+                            }
+                            schedule_refetch(data, hold, set_data, set_error);
+                        }
+                    }
+                }
+            }
+            // A connection that lived for a while may have missed events when
+            // it dropped; sync up once before reconnecting.
+            if js_sys::Date::now() - connected_at > 5_000.0 {
+                backoff_ms = 1_000;
+                if data.try_get_untracked().flatten().is_some() {
+                    schedule_refetch(data, hold, set_data, set_error);
+                }
+            }
+            gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
+            backoff_ms = (backoff_ms * 2).min(30_000);
+        }
+        running.set_value(false);
+    });
+}
+
+fn websocket_url() -> Option<String> {
+    let location = web_sys::window()?.location();
+    let protocol = if location.protocol().ok()? == "https:" {
+        "wss"
+    } else {
+        "ws"
+    };
+    let host = location.host().ok()?;
+    Some(format!("{protocol}://{host}/api/ws?client_id={}", client_id()))
+}
+
+fn upload_attachments(
+    task_id: String,
+    files: web_sys::FileList,
+    set_uploading: WriteSignal<bool>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) {
+    let Ok(form) = web_sys::FormData::new() else {
+        return;
+    };
+    let mut any = false;
+    for i in 0..files.length() {
+        if let Some(file) = files.get(i) {
+            if form.append_with_blob("files", &file).is_ok() {
+                any = true;
+            }
+        }
+    }
+    if !any {
+        return;
+    }
+    set_uploading.set(true);
+    spawn_local(async move {
+        match api_post_form::<TaskDto>(&format!("/api/tasks/{task_id}/attachments"), form).await {
+            Ok(task) => {
+                replace_task(set_data, task);
+                set_error.set(None);
+            }
+            Err(err) => set_error.set(Some(err.message)),
+        }
+        set_uploading.set(false);
+    });
+}
+
+fn attachment_ext(file_name: &str) -> String {
+    file_name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// Attachment chip plus an inline preview: images render directly, PDFs get
+/// a toggleable iframe, everything else stays a plain download link.
+fn attachment_view(a: AttachmentDto, lang: ReadSignal<Lang>) -> View {
+    let ext = attachment_ext(&a.file_name);
+    let inline_url = format!("/api/attachments/{}?inline=1", a.id);
+    let download_url = format!("/api/attachments/{}", a.id);
+    let chip = view! {
+        <a class="file-chip" href=download_url download>"Datei "{a.file_name.clone()}<small>{a.size_label.clone()}</small></a>
+    };
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" => {
+            let alt = a.file_name.clone();
+            view! {
+                <div class="attachment">
+                    {chip}
+                    <a href=inline_url.clone() target="_blank" rel="noopener">
+                        <img class="attach-preview" src=inline_url loading="lazy" alt=alt/>
+                    </a>
+                </div>
+            }
+            .into_view()
+        }
+        "pdf" => {
+            let (preview, set_preview) = create_signal(false);
+            let title = a.file_name.clone();
+            view! {
+                <div class="attachment">
+                    {chip}
+                    <button class="link-button" on:click=move |_| set_preview.update(|p| *p = !*p)>
+                        {move || match (preview.get(), lang.get() == Lang::De) {
+                            (true, true) => "Vorschau ausblenden",
+                            (true, false) => "Hide preview",
+                            (false, true) => "Vorschau anzeigen",
+                            (false, false) => "Show preview",
+                        }}
+                    </button>
+                    {move || preview.get().then(|| view! {
+                        <iframe class="attach-pdf" src=inline_url.clone() title=title.clone()></iframe>
+                    })}
+                </div>
+            }
+            .into_view()
+        }
+        _ => view! { <div class="attachment">{chip}</div> }.into_view(),
+    }
+}
+
+/// The trailing "@query" fragment of the comment draft, if the cursor sits in
+/// one: returns the byte offset of the '@' and the query after it. The '@'
+/// must start the input or follow whitespace.
+fn mention_query(value: &str) -> Option<(usize, String)> {
+    let at = value.rfind('@')?;
+    if value[..at]
+        .chars()
+        .next_back()
+        .is_some_and(|c| !c.is_whitespace())
+    {
+        return None;
+    }
+    let query = &value[at + 1..];
+    if query.len() > 30 {
+        return None;
+    }
+    Some((at, query.to_string()))
+}
+
+/// Splits a comment body into (text, is_mention) segments. Uses the same
+/// rule as the backend parser: exact member names, longest first, followed by
+/// a non-alphanumeric boundary.
+fn mention_segments(body: &str, names: &[String]) -> Vec<(String, bool)> {
+    let mut by_length: Vec<&String> = names.iter().filter(|n| !n.trim().is_empty()).collect();
+    by_length.sort_by_key(|name| std::cmp::Reverse(name.len()));
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for name in by_length {
+        let pattern = format!("@{name}");
+        for (start, _) in body.match_indices(&pattern) {
+            let end = start + pattern.len();
+            let boundary_ok = body[end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric());
+            let overlaps = ranges.iter().any(|&(s, e)| start < e && end > s);
+            if boundary_ok && !overlaps {
+                ranges.push((start, end));
+            }
+        }
+    }
+    ranges.sort_unstable();
+
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start > cursor {
+            out.push((body[cursor..start].to_string(), false));
+        }
+        out.push((body[start..end].to_string(), true));
+        cursor = end;
+    }
+    if cursor < body.len() {
+        out.push((body[cursor..].to_string(), false));
+    }
+    out
+}
+
+/// Renders a comment body with member mentions highlighted. Builds views from
+/// plain segments (never raw HTML), so bodies stay XSS-safe.
+fn comment_body_view(body: &str, member_names: &[String]) -> View {
+    mention_segments(body, member_names)
+        .into_iter()
+        .map(|(text, is_mention)| {
+            if is_mention {
+                view! { <span class="mention">{text}</span> }.into_view()
+            } else {
+                text.into_view()
+            }
+        })
+        .collect_view()
 }
 
 fn task_title(task: &TaskDto, lang: Lang) -> String {
@@ -2530,6 +3011,63 @@ fn priority_from_value(value: &str) -> Priority {
         "low" => Priority::Low,
         _ => Priority::Medium,
     }
+}
+
+fn recurrence_from_value(value: &str) -> Option<Recurrence> {
+    match value {
+        "daily" => Some(Recurrence::Daily),
+        "weekly" => Some(Recurrence::Weekly),
+        "biweekly" => Some(Recurrence::Biweekly),
+        "monthly" => Some(Recurrence::Monthly),
+        _ => None,
+    }
+}
+
+fn recurrence_value(recurrence: Option<&Recurrence>) -> &'static str {
+    match recurrence {
+        Some(Recurrence::Daily) => "daily",
+        Some(Recurrence::Weekly) => "weekly",
+        Some(Recurrence::Biweekly) => "biweekly",
+        Some(Recurrence::Monthly) => "monthly",
+        None => "",
+    }
+}
+
+fn recurrence_label(recurrence: Option<&Recurrence>, lang: Lang) -> &'static str {
+    match (recurrence, lang) {
+        (Some(Recurrence::Daily), Lang::De) => "Täglich",
+        (Some(Recurrence::Daily), Lang::En) => "Daily",
+        (Some(Recurrence::Weekly), Lang::De) => "Wöchentlich",
+        (Some(Recurrence::Weekly), Lang::En) => "Weekly",
+        (Some(Recurrence::Biweekly), Lang::De) => "Alle 2 Wochen",
+        (Some(Recurrence::Biweekly), Lang::En) => "Every 2 weeks",
+        (Some(Recurrence::Monthly), Lang::De) => "Monatlich",
+        (Some(Recurrence::Monthly), Lang::En) => "Monthly",
+        (None, Lang::De) => "Keine Wiederholung",
+        (None, Lang::En) => "No repeat",
+    }
+}
+
+/// The recurrence options for a task select, with `current` preselected.
+fn recurrence_options(current: Option<Recurrence>, lang: ReadSignal<Lang>) -> View {
+    [
+        None,
+        Some(Recurrence::Daily),
+        Some(Recurrence::Weekly),
+        Some(Recurrence::Biweekly),
+        Some(Recurrence::Monthly),
+    ]
+    .into_iter()
+    .map(|option| {
+        let selected = option == current;
+        let value = recurrence_value(option.as_ref());
+        view! {
+            <option value=value selected=selected>
+                {move || recurrence_label(option.as_ref(), lang.get())}
+            </option>
+        }
+    })
+    .collect_view()
 }
 
 fn role_from_value(value: &str) -> Role {
@@ -2902,5 +3440,47 @@ mod tests {
         assert_eq!(fmt_date("2026-03-05", Lang::En), "Mar 5");
         assert_eq!(fmt_date("2026-12-24", Lang::De), "24. Dez");
         assert_eq!(fmt_date("not-a-date", Lang::De), "not-a-date");
+    }
+
+    #[test]
+    fn mention_query_finds_trailing_fragment() {
+        assert_eq!(mention_query("hallo @An"), Some((6, "An".to_string())));
+        assert_eq!(mention_query("@"), Some((0, String::new())));
+        assert_eq!(
+            mention_query("@Anna Sch"),
+            Some((0, "Anna Sch".to_string()))
+        );
+        // '@' glued to a word (e-mail address) is not a mention trigger.
+        assert_eq!(mention_query("mail an anna@web.de"), None);
+        assert_eq!(mention_query("kein at"), None);
+    }
+
+    #[test]
+    fn mention_segments_highlight_known_names() {
+        let names = vec!["Anna".to_string(), "Anna Schmidt".to_string()];
+        assert_eq!(
+            mention_segments("ping @Anna Schmidt jetzt", &names),
+            vec![
+                ("ping ".to_string(), false),
+                ("@Anna Schmidt".to_string(), true),
+                (" jetzt".to_string(), false),
+            ]
+        );
+        // Boundary: longer words never match a shorter member name.
+        assert_eq!(
+            mention_segments("@Annabelle hi", &names),
+            vec![("@Annabelle hi".to_string(), false)]
+        );
+        assert_eq!(
+            mention_segments("ohne mention", &names),
+            vec![("ohne mention".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn attachment_extensions_are_lowercased() {
+        assert_eq!(attachment_ext("Plan.PDF"), "pdf");
+        assert_eq!(attachment_ext("foto.jpeg"), "jpeg");
+        assert_eq!(attachment_ext("noext"), "");
     }
 }
