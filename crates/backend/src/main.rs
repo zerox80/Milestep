@@ -13,7 +13,10 @@ use argon2::{
 };
 use axum::{
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Request, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, Request, State,
+    },
     http::{
         header::{
             CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
@@ -31,11 +34,16 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use hmac::{Hmac, Mac};
 use kowobau_shared::*;
 use rand_core::{OsRng, RngCore};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgConnection, PgPool};
-use tokio::{fs, io::AsyncWriteExt, net::TcpListener, sync::Semaphore};
+use tokio::{
+    fs,
+    io::AsyncWriteExt,
+    net::TcpListener,
+    sync::{broadcast, Semaphore},
+};
 use tokio_util::io::ReaderStream;
 use tower_http::{
     compression::CompressionLayer,
@@ -64,6 +72,13 @@ const ALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
     "pdf", "png", "jpg", "jpeg", "webp", "svg", "csv", "xlsx", "docx", "txt", "json", "zip", "dwg",
     "ifc",
 ];
+// Extensions that may be served with Content-Disposition: inline so the app
+// can preview them in <img>/<iframe>. SVG is deliberately excluded: rendered
+// as a document it could execute script; it stays download-only.
+const INLINE_PREVIEW_EXTENSIONS: &[&str] = &["pdf", "png", "jpg", "jpeg", "webp"];
+// Bounded fanout queue for realtime events; slow sockets get a resync hint
+// instead of unbounded buffering.
+const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 // Equalizes login timing for unknown emails so account existence cannot be inferred.
 static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
@@ -94,6 +109,8 @@ struct AppState {
     cfg: AppConfig,
     auth_limiter: Arc<Mutex<HashMap<IpAddr, (Instant, u32)>>>,
     hash_permits: Arc<Semaphore>,
+    // Workspace-scoped realtime events, fanned out to every connected socket.
+    events: broadcast::Sender<WorkspaceEventDto>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,11 +208,13 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("demo seed disabled (set KOWOBAU_SEED_DEMO=true to enable)");
     }
 
+    let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
     let state = AppState {
         db,
         cfg,
         auth_limiter: Arc::new(Mutex::new(HashMap::new())),
         hash_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_HASHES)),
+        events,
     };
     let app = build_router(state.clone());
 
@@ -316,6 +335,7 @@ fn build_router(state: AppState) -> Router {
         .route("/auth/logout-all", post(logout_all))
         .route("/auth/me", get(me))
         .route("/bootstrap", get(bootstrap))
+        .route("/ws", get(ws_handler))
         .route("/tasks", get(list_tasks).post(create_task))
         .route("/tickets", get(list_tickets).post(create_ticket))
         .route(
@@ -454,8 +474,14 @@ async fn security_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
     headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    // Handlers may set stricter, response-specific framing/CSP headers (inline
+    // attachment previews need SAMEORIGIN framing); only fill in the defaults.
+    if !headers.contains_key(X_FRAME_OPTIONS) {
+        headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    }
+    if !headers.contains_key(CONTENT_SECURITY_POLICY) {
+        headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    }
     headers.insert(
         REFERRER_POLICY,
         HeaderValue::from_static("strict-origin-when-cross-origin"),
@@ -781,8 +807,8 @@ async fn create_task(
     let task_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO tasks \
-         (id, project_id, key, title, description, tag, tag_color, priority, status_id, start_date, due_date, phase, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+         (id, project_id, key, title, description, tag, tag_color, priority, status_id, start_date, due_date, phase, recurrence, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(task_id)
     .bind(project_id)
@@ -796,6 +822,7 @@ async fn create_task(
     .bind(parse_optional_date(payload.start_date.as_deref())?)
     .bind(parse_optional_date(payload.due_date.as_deref())?)
     .bind(payload.phase.trim())
+    .bind(payload.recurrence.as_ref().map(recurrence_to_db))
     .bind(user_id)
     .execute(&mut *tx)
     .await?;
@@ -825,6 +852,7 @@ async fn create_task(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "task");
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -903,6 +931,7 @@ async fn create_ticket(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "ticket");
     Ok(Json(fetch_ticket(&state.db, ticket_id).await?))
 }
 
@@ -990,6 +1019,7 @@ async fn update_ticket(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "ticket");
     Ok(Json(fetch_ticket(&state.db, ticket_id).await?))
 }
 
@@ -1043,6 +1073,7 @@ async fn update_task(
             .execute(&mut *tx)
             .await?;
     }
+    let mut was_done_before_status_change: Option<bool> = None;
     if let Some(status_id) = payload.status_id {
         let status_id = uuid_from_str(&status_id)?;
         let project_id: (Uuid,) = sqlx::query_as("SELECT project_id FROM tasks WHERE id = $1")
@@ -1050,6 +1081,7 @@ async fn update_task(
             .fetch_one(&mut *tx)
             .await?;
         assert_status_in_project(&mut *tx, project_id.0, status_id).await?;
+        was_done_before_status_change = Some(task_status_is_done(&mut *tx, task_id).await?);
         sqlx::query("UPDATE tasks SET status_id = $1, updated_at = now() WHERE id = $2")
             .bind(status_id)
             .bind(task_id)
@@ -1077,8 +1109,23 @@ async fn update_task(
             .execute(&mut *tx)
             .await?;
     }
+    if let Some(recurrence) = payload.recurrence {
+        sqlx::query("UPDATE tasks SET recurrence = $1, updated_at = now() WHERE id = $2")
+            .bind(recurrence.as_ref().map(recurrence_to_db))
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     if let Some(assignee_ids) = payload.assignee_ids {
         replace_assignees(&mut tx, task_id, &assignee_ids).await?;
+    }
+
+    // After all field updates so a recurrence change in the same PATCH counts.
+    let mut spawned_follow_up = false;
+    if let Some(was_done) = was_done_before_status_change {
+        spawned_follow_up = spawn_recurrence_if_completed(&mut tx, task_id, was_done)
+            .await?
+            .is_some();
     }
 
     record_audit(
@@ -1091,6 +1138,12 @@ async fn update_task(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "task");
+    if spawned_follow_up {
+        // Without a client id even the originating tab refetches and sees the
+        // spawned follow-up task.
+        notify_workspace_all(&state, workspace_id, "task");
+    }
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -1111,12 +1164,16 @@ async fn move_task(
         .fetch_one(&mut *tx)
         .await?;
     assert_status_in_project(&mut *tx, project_id.0, status_id).await?;
+    let was_done = task_status_is_done(&mut *tx, task_id).await?;
 
     sqlx::query("UPDATE tasks SET status_id = $1, updated_at = now() WHERE id = $2")
         .bind(status_id)
         .bind(task_id)
         .execute(&mut *tx)
         .await?;
+    let spawned_follow_up = spawn_recurrence_if_completed(&mut tx, task_id, was_done)
+        .await?
+        .is_some();
     record_audit(
         &mut *tx,
         workspace_id,
@@ -1127,6 +1184,12 @@ async fn move_task(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "task");
+    if spawned_follow_up {
+        // Without a client id even the originating tab refetches and sees the
+        // spawned follow-up task (drag&drop only patches the moved task locally).
+        notify_workspace_all(&state, workspace_id, "task");
+    }
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -1161,6 +1224,7 @@ async fn delete_task(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "task");
     for (path,) in storage_paths {
         if let Err(err) = fs::remove_file(&path).await {
             tracing::warn!(%path, %err, "could not remove attachment file of deleted task");
@@ -1193,6 +1257,7 @@ async fn delete_ticket(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "ticket");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1231,6 +1296,7 @@ async fn create_subtask(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "task");
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -1279,6 +1345,7 @@ async fn update_subtask(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "task");
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -1309,6 +1376,7 @@ async fn delete_subtask(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "task");
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -1326,12 +1394,13 @@ async fn create_comment(
     if payload.body.trim().is_empty() {
         return Err(AppError::BadRequest("comment body is required".into()));
     }
+    let body = payload.body.trim().to_string();
     let mut tx = state.db.begin().await?;
     sqlx::query("INSERT INTO comments (id, task_id, user_id, body) VALUES ($1, $2, $3, $4)")
         .bind(Uuid::new_v4())
         .bind(task_id)
         .bind(user_id)
-        .bind(payload.body.trim())
+        .bind(&body)
         .execute(&mut *tx)
         .await?;
     sqlx::query(
@@ -1340,6 +1409,58 @@ async fn create_comment(
     .bind(task_id)
     .execute(&mut *tx)
     .await?;
+
+    let (task_key,): (String,) = sqlx::query_as("SELECT key FROM tasks WHERE id = $1")
+        .bind(task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let members: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT m.user_id, u.name FROM memberships m JOIN users u ON u.id = m.user_id \
+         WHERE m.workspace_id = $1 AND m.status = 'active'",
+    )
+    .bind(workspace_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mentioned = mentioned_user_ids(&body, &members);
+    for &target in mentioned.iter().filter(|&&id| id != user_id) {
+        insert_notification(
+            &mut *tx,
+            workspace_id,
+            target,
+            &NotificationKind::Mention,
+            user_id,
+            Some(task_id),
+            &format!("hat dich in {task_key} erwähnt"),
+            &format!("mentioned you in {task_key}"),
+        )
+        .await?;
+    }
+    // Everyone else involved with the task (assignees and earlier commenters)
+    // gets a plain comment notification instead.
+    let participants: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT user_id FROM task_assignees WHERE task_id = $1 \
+         UNION SELECT user_id FROM comments WHERE task_id = $1",
+    )
+    .bind(task_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (target,) in participants {
+        if target == user_id || mentioned.contains(&target) {
+            continue;
+        }
+        insert_notification(
+            &mut *tx,
+            workspace_id,
+            target,
+            &NotificationKind::Comment,
+            user_id,
+            Some(task_id),
+            &format!("hat {task_key} kommentiert"),
+            &format!("commented on {task_key}"),
+        )
+        .await?;
+    }
+
     record_audit(
         &mut *tx,
         workspace_id,
@@ -1350,6 +1471,7 @@ async fn create_comment(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, workspace_id, "comment");
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -1382,6 +1504,7 @@ async fn upload_attachment(
         }
         return Err(err);
     }
+    notify_workspace(&state, &headers, workspace_id, "attachment");
     Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
@@ -1492,10 +1615,17 @@ async fn store_attachments(
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct InlineQuery {
+    #[serde(default)]
+    inline: Option<String>,
+}
+
 async fn download_attachment(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(query): Query<InlineQuery>,
 ) -> Result<Response, AppError> {
     let ctx = require_auth(&state, &headers).await?;
     let user_id = uuid_from_str(&ctx.user.id)?;
@@ -1535,12 +1665,24 @@ async fn download_attachment(
         HeaderValue::from_str(mime.as_ref())
             .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
+    let inline = query.inline.as_deref() == Some("1") && inline_previewable(&file_name);
+    let disposition = if inline { "inline" } else { "attachment" };
     // file_name is sanitized to ASCII [A-Za-z0-9._-] on upload, so this is header-safe.
     res.headers_mut().insert(
         CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\""))
+        HeaderValue::from_str(&format!("{disposition}; filename=\"{file_name}\""))
             .map_err(|_| AppError::NotFound)?,
     );
+    if inline {
+        // Allow same-origin framing (PDF preview iframe) but sandbox the
+        // served document; security_headers leaves these handler-set values alone.
+        res.headers_mut()
+            .insert(X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+        res.headers_mut().insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; sandbox; frame-ancestors 'self'"),
+        );
+    }
     res.headers_mut()
         .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     Ok(res)
@@ -1573,6 +1715,126 @@ async fn read_all_notifications(
         .execute(&state.db)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Fire-and-forget realtime fanout to the workspace. The originating tab
+/// identifies itself via the X-Client-Id header so it can skip refetching its
+/// own (already locally applied) mutation. send() only errs when no socket is
+/// connected, which is fine to ignore.
+fn notify_workspace(state: &AppState, headers: &HeaderMap, workspace_id: Uuid, topic: &str) {
+    let client_id = headers
+        .get("x-client-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty() && v.len() <= 64)
+        .map(str::to_string);
+    let _ = state.events.send(WorkspaceEventDto {
+        workspace_id: workspace_id.to_string(),
+        topic: topic.to_string(),
+        client_id,
+    });
+}
+
+/// Like notify_workspace, but without echo suppression: every tab refetches,
+/// including the one that caused the change (used when the server created
+/// additional data the originator does not know about, e.g. a recurring
+/// follow-up task).
+fn notify_workspace_all(state: &AppState, workspace_id: Uuid, topic: &str) {
+    let _ = state.events.send(WorkspaceEventDto {
+        workspace_id: workspace_id.to_string(),
+        topic: topic.to_string(),
+        client_id: None,
+    });
+}
+
+#[derive(Debug, Deserialize)]
+struct WsQuery {
+    #[serde(default)]
+    client_id: Option<String>,
+}
+
+async fn ws_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<WsQuery>,
+    ws: WebSocketUpgrade,
+) -> Result<Response, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let user_id = uuid_from_str(&ctx.user.id)?;
+    // Same scoping rule as fetch_bootstrap: the first active membership
+    // decides which workspace this connection belongs to.
+    let membership: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT workspace_id FROM memberships \
+         WHERE user_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (workspace_id,) = membership.ok_or(AppError::Forbidden)?;
+    let client_id = query
+        .client_id
+        .filter(|v| !v.is_empty() && v.len() <= 64);
+    Ok(ws.on_upgrade(move |socket| ws_loop(socket, state, workspace_id, client_id)))
+}
+
+async fn ws_loop(
+    socket: WebSocket,
+    state: AppState,
+    workspace_id: Uuid,
+    client_id: Option<String>,
+) {
+    use futures_util::{SinkExt, StreamExt};
+
+    let (mut sink, mut stream) = socket.split();
+    let mut events = state.events.subscribe();
+    let workspace = workspace_id.to_string();
+    // Keeps the connection alive through nginx's proxy_read_timeout.
+    let mut ping = tokio::time::interval(StdDuration::from_secs(30));
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping.tick().await; // the first tick fires immediately
+
+    loop {
+        tokio::select! {
+            _ = ping.tick() => {
+                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            }
+            incoming = stream.next() => {
+                match incoming {
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+            event = events.recv() => {
+                let event = match event {
+                    Ok(event) => {
+                        if event.workspace_id != workspace {
+                            continue;
+                        }
+                        // Skip the echo of this tab's own mutation.
+                        if event.client_id.is_some() && event.client_id == client_id {
+                            continue;
+                        }
+                        event
+                    }
+                    // This receiver fell behind and missed events; tell the
+                    // client to refetch instead of dropping the connection.
+                    Err(broadcast::error::RecvError::Lagged(_)) => WorkspaceEventDto {
+                        workspace_id: workspace.clone(),
+                        topic: "resync".to_string(),
+                        client_id: None,
+                    },
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                let Ok(json) = serde_json::to_string(&event) else {
+                    continue;
+                };
+                if sink.send(Message::Text(json.into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 async fn update_workspace(
@@ -1616,6 +1878,7 @@ async fn update_workspace(
         Some(workspace_id),
     )
     .await?;
+    notify_workspace(&state, &headers, workspace_id, "workspace");
     Ok(Json(fetch_workspace(&state.db, workspace_id).await?))
 }
 
@@ -1687,6 +1950,7 @@ async fn invite_member(
         )
         .await?;
         tx.commit().await?;
+        notify_workspace(&state, &headers, workspace_id, "workspace");
         return Ok(Json(InviteMemberResponse {
             invite_token: None,
             invite_path: None,
@@ -1797,6 +2061,7 @@ async fn update_membership(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, row.workspace_id, "workspace");
     Ok(Json(fetch_member(&state.db, membership_id).await?))
 }
 
@@ -1876,6 +2141,7 @@ async fn remove_membership(
     )
     .await?;
     tx.commit().await?;
+    notify_workspace(&state, &headers, row.workspace_id, "workspace");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2241,6 +2507,7 @@ struct TaskRow {
     start_date: Option<NaiveDate>,
     due_date: Option<NaiveDate>,
     phase: String,
+    recurrence: Option<String>,
     comments_count: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -2544,7 +2811,8 @@ const TASK_SELECT: &str =
     "SELECT t.id, t.project_id, t.key, t.title, t.title_en, t.description, t.description_en, \
             t.tag, t.tag_color, t.priority, t.status_id, s.position AS status_position, \
             s.is_done AS status_is_done, \
-            t.start_date, t.due_date, t.phase, t.comments_count, t.created_at, t.updated_at \
+            t.start_date, t.due_date, t.phase, t.recurrence, t.comments_count, \
+            t.created_at, t.updated_at \
      FROM tasks t JOIN project_statuses s ON s.id = t.status_id";
 
 async fn fetch_tasks(db: &PgPool, project_id: Uuid) -> Result<Vec<TaskDto>, AppError> {
@@ -2733,6 +3001,11 @@ async fn assemble_tasks(db: &PgPool, rows: Vec<TaskRow>) -> Result<Vec<TaskDto>,
                 start_date: row.start_date.map(|d| d.to_string()),
                 due_date: row.due_date.map(|d| d.to_string()),
                 phase: row.phase,
+                recurrence: row
+                    .recurrence
+                    .as_deref()
+                    .map(recurrence_from_db)
+                    .transpose()?,
                 assignee_ids: assignees.remove(&row.id).unwrap_or_default(),
                 dependency_ids: dependencies.remove(&row.id).unwrap_or_default(),
                 subtasks: subtasks.remove(&row.id).unwrap_or_default(),
@@ -3065,6 +3338,182 @@ async fn record_audit(
     .execute(exec)
     .await?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_notification(
+    exec: impl sqlx::PgExecutor<'_>,
+    workspace_id: Uuid,
+    user_id: Uuid,
+    kind: &NotificationKind,
+    actor_id: Uuid,
+    task_id: Option<Uuid>,
+    text_de: &str,
+    text_en: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO notifications (id, workspace_id, user_id, kind, actor_id, task_id, text, text_en, unread) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(workspace_id)
+    .bind(user_id)
+    .bind(notification_kind_to_db(kind))
+    .bind(actor_id)
+    .bind(task_id)
+    .bind(text_de)
+    .bind(text_en)
+    .execute(exec)
+    .await?;
+    Ok(())
+}
+
+async fn task_status_is_done(
+    exec: impl sqlx::PgExecutor<'_>,
+    task_id: Uuid,
+) -> Result<bool, AppError> {
+    let (is_done,): (bool,) = sqlx::query_as(
+        "SELECT s.is_done FROM tasks t JOIN project_statuses s ON s.id = t.status_id WHERE t.id = $1",
+    )
+    .bind(task_id)
+    .fetch_one(exec)
+    .await?;
+    Ok(is_done)
+}
+
+#[derive(Debug, FromRow)]
+struct RecurrenceSourceRow {
+    recurrence: Option<String>,
+    is_done: bool,
+    project_id: Uuid,
+    title: String,
+    title_en: Option<String>,
+    description: String,
+    description_en: Option<String>,
+    tag: String,
+    tag_color: String,
+    priority: String,
+    start_date: Option<NaiveDate>,
+    due_date: Option<NaiveDate>,
+    phase: String,
+    created_by: Option<Uuid>,
+}
+
+/// If `task_id` just transitioned from a not-done into a done status and
+/// carries a recurrence, creates the next instance (dates shifted, subtasks
+/// reset, assignees copied) and moves the recurrence marker onto it. Moving
+/// the marker makes repeated spawning from the same task impossible: the
+/// chain continues through the new instance. Returns the new task id.
+async fn spawn_recurrence_if_completed(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    task_id: Uuid,
+    was_done: bool,
+) -> Result<Option<Uuid>, AppError> {
+    if was_done {
+        return Ok(None);
+    }
+    let source: RecurrenceSourceRow = sqlx::query_as(
+        "SELECT t.recurrence, s.is_done, t.project_id, t.title, t.title_en, t.description, \
+                t.description_en, t.tag, t.tag_color, t.priority, t.start_date, t.due_date, \
+                t.phase, t.created_by \
+         FROM tasks t JOIN project_statuses s ON s.id = t.status_id WHERE t.id = $1",
+    )
+    .bind(task_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let Some(recurrence) = source.recurrence.as_deref() else {
+        return Ok(None);
+    };
+    if !source.is_done {
+        return Ok(None);
+    }
+    let recurrence = recurrence_from_db(recurrence)?;
+
+    // The follow-up starts in the first open status of the project; a project
+    // without any open status cannot host a follow-up.
+    let target_status: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM project_statuses WHERE project_id = $1 AND NOT is_done \
+         ORDER BY position LIMIT 1",
+    )
+    .bind(source.project_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((status_id,)) = target_status else {
+        return Ok(None);
+    };
+
+    // Same advisory-lock pattern as create_task so concurrent key generation
+    // cannot collide.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(source.project_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    let (project_key,): (String,) = sqlx::query_as("SELECT key FROM projects WHERE id = $1")
+        .bind(source.project_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let next: (i32,) = sqlx::query_as(
+        "SELECT COALESCE(MAX(split_part(key, '-', 2)::INT), 100) + 1 \
+         FROM tasks WHERE project_id = $1 AND key LIKE $2 || '-%' \
+         AND split_part(key, '-', 2) ~ '^[0-9]+$'",
+    )
+    .bind(source.project_id)
+    .bind(&project_key)
+    .fetch_one(&mut **tx)
+    .await?;
+    let key = format!("{}-{}", project_key, next.0);
+
+    let new_task_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO tasks \
+         (id, project_id, key, title, title_en, description, description_en, tag, tag_color, \
+          priority, status_id, start_date, due_date, phase, recurrence, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+    )
+    .bind(new_task_id)
+    .bind(source.project_id)
+    .bind(&key)
+    .bind(&source.title)
+    .bind(&source.title_en)
+    .bind(&source.description)
+    .bind(&source.description_en)
+    .bind(&source.tag)
+    .bind(&source.tag_color)
+    .bind(&source.priority)
+    .bind(status_id)
+    .bind(source.start_date.map(|d| shift_date(d, &recurrence)))
+    .bind(source.due_date.map(|d| shift_date(d, &recurrence)))
+    .bind(&source.phase)
+    .bind(recurrence_to_db(&recurrence))
+    .bind(source.created_by)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO task_assignees (task_id, user_id) \
+         SELECT $1, user_id FROM task_assignees WHERE task_id = $2",
+    )
+    .bind(new_task_id)
+    .bind(task_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO subtasks (id, task_id, title, title_en, done, position) \
+         SELECT gen_random_uuid(), $1, title, title_en, false, position \
+         FROM subtasks WHERE task_id = $2",
+    )
+    .bind(new_task_id)
+    .bind(task_id)
+    .execute(&mut **tx)
+    .await?;
+
+    // The completed instance stops recurring; the new one carries the marker.
+    sqlx::query("UPDATE tasks SET recurrence = NULL, updated_at = now() WHERE id = $1")
+        .bind(task_id)
+        .execute(&mut **tx)
+        .await?;
+
+    Ok(Some(new_task_id))
 }
 
 async fn create_workspace_for_user(
@@ -3823,6 +4272,82 @@ fn ticket_status_from_db(value: &str) -> Result<TicketStatus, AppError> {
     }
 }
 
+fn recurrence_to_db(recurrence: &Recurrence) -> &'static str {
+    match recurrence {
+        Recurrence::Daily => "daily",
+        Recurrence::Weekly => "weekly",
+        Recurrence::Biweekly => "biweekly",
+        Recurrence::Monthly => "monthly",
+    }
+}
+
+fn recurrence_from_db(value: &str) -> Result<Recurrence, AppError> {
+    match value {
+        "daily" => Ok(Recurrence::Daily),
+        "weekly" => Ok(Recurrence::Weekly),
+        "biweekly" => Ok(Recurrence::Biweekly),
+        "monthly" => Ok(Recurrence::Monthly),
+        _ => Err(AppError::BadRequest(format!("unknown recurrence {value}"))),
+    }
+}
+
+fn shift_date(date: NaiveDate, recurrence: &Recurrence) -> NaiveDate {
+    match recurrence {
+        Recurrence::Daily => date + Duration::days(1),
+        Recurrence::Weekly => date + Duration::days(7),
+        Recurrence::Biweekly => date + Duration::days(14),
+        // checked_add_months clamps (Jan 31 -> Feb 28/29) and only fails far
+        // outside any plannable date range.
+        Recurrence::Monthly => date
+            .checked_add_months(chrono::Months::new(1))
+            .unwrap_or(date),
+    }
+}
+
+/// User ids of members whose exact name appears as "@Name" in `body`,
+/// followed by a non-alphanumeric boundary (or end of input). Matching is
+/// case-sensitive against the canonical member names the autocomplete
+/// inserts, checked longest-first so "@Anna Schmidt" wins over a member
+/// literally named "Anna".
+fn mentioned_user_ids(body: &str, members: &[(Uuid, String)]) -> Vec<Uuid> {
+    let mut by_length: Vec<&(Uuid, String)> = members
+        .iter()
+        .filter(|(_, name)| !name.trim().is_empty())
+        .collect();
+    by_length.sort_by_key(|(_, name)| std::cmp::Reverse(name.len()));
+
+    // Byte ranges already claimed by a (longer) name, so "@Anna Schmidt"
+    // does not additionally mention a member named "Anna".
+    let mut claimed: Vec<(usize, usize)> = Vec::new();
+    let mut out: Vec<Uuid> = Vec::new();
+    for (user_id, name) in by_length {
+        let pattern = format!("@{name}");
+        for (start, _) in body.match_indices(&pattern) {
+            let end = start + pattern.len();
+            let boundary_ok = body[end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric());
+            let overlaps = claimed.iter().any(|&(s, e)| start < e && end > s);
+            if boundary_ok && !overlaps {
+                claimed.push((start, end));
+                if !out.contains(user_id) {
+                    out.push(*user_id);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn inline_previewable(file_name: &str) -> bool {
+    FsPath::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| INLINE_PREVIEW_EXTENSIONS.contains(&e.as_str()))
+}
+
 fn notification_kind_to_db(kind: &NotificationKind) -> &'static str {
     match kind {
         NotificationKind::Assigned => "assigned",
@@ -3990,6 +4515,79 @@ mod tests {
         assert!(!allowed_upload_extension("malware.exe"));
         assert!(!allowed_upload_extension("seite.html"));
         assert!(!allowed_upload_extension("noextension"));
+    }
+
+    #[test]
+    fn inline_preview_is_limited_to_safe_types() {
+        assert!(inline_previewable("plan.pdf"));
+        assert!(inline_previewable("PHOTO.JPG"));
+        assert!(inline_previewable("foto.webp"));
+        // SVG can execute script when rendered as a document.
+        assert!(!inline_previewable("logo.svg"));
+        assert!(!inline_previewable("daten.xlsx"));
+    }
+
+    #[test]
+    fn shift_date_advances_by_recurrence() {
+        let date = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        assert_eq!(
+            shift_date(date, &Recurrence::Daily),
+            NaiveDate::from_ymd_opt(2026, 6, 2).unwrap()
+        );
+        assert_eq!(
+            shift_date(date, &Recurrence::Weekly),
+            NaiveDate::from_ymd_opt(2026, 6, 8).unwrap()
+        );
+        assert_eq!(
+            shift_date(date, &Recurrence::Biweekly),
+            NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
+        );
+        assert_eq!(
+            shift_date(date, &Recurrence::Monthly),
+            NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn shift_date_monthly_clamps_to_month_end() {
+        let date = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        assert_eq!(
+            shift_date(date, &Recurrence::Monthly),
+            NaiveDate::from_ymd_opt(2026, 2, 28).unwrap()
+        );
+    }
+
+    #[test]
+    fn mentions_match_exact_names_with_boundaries() {
+        let anna = Uuid::new_v4();
+        let anna_schmidt = Uuid::new_v4();
+        let joerg = Uuid::new_v4();
+        let members = vec![
+            (anna, "Anna".to_string()),
+            (anna_schmidt, "Anna Schmidt".to_string()),
+            (joerg, "Jörg Müller".to_string()),
+        ];
+
+        // Longest name wins; the shorter prefix member is not also mentioned.
+        assert_eq!(
+            mentioned_user_ids("ping @Anna Schmidt bitte prüfen", &members),
+            vec![anna_schmidt]
+        );
+        assert_eq!(mentioned_user_ids("@Anna kannst du?", &members), vec![anna]);
+        // Boundary check: a longer word must not match a shorter name.
+        assert!(mentioned_user_ids("@Annabelle hi", &members).is_empty());
+        // Umlaut names work without any lowercasing tricks.
+        assert_eq!(
+            mentioned_user_ids("cc @Jörg Müller!", &members),
+            vec![joerg]
+        );
+        // No mention syntax, no hits.
+        assert!(mentioned_user_ids("mail an anna@example.com", &members).is_empty());
+        // Duplicates collapse.
+        assert_eq!(
+            mentioned_user_ids("@Anna und nochmal @Anna", &members),
+            vec![anna]
+        );
     }
 
     #[test]
