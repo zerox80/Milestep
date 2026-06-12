@@ -357,7 +357,10 @@ fn build_router(state: AppState) -> Router {
             "/tasks/{id}/attachments",
             post(upload_attachment).route_layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
-        .route("/attachments/{id}", get(download_attachment))
+        .route(
+            "/attachments/{id}",
+            get(download_attachment).delete(delete_attachment),
+        )
         .route("/notifications/{id}/read", post(read_notification))
         .route("/notifications/read-all", post(read_all_notifications))
         .route("/workspaces/{id}", patch(update_workspace))
@@ -1698,6 +1701,51 @@ async fn download_attachment(
     res.headers_mut()
         .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     Ok(res)
+}
+
+async fn delete_attachment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<TaskDto>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let user_id = uuid_from_str(&ctx.user.id)?;
+    let attachment_id = uuid_from_str(&id)?;
+
+    let row: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT task_id, storage_path FROM attachments WHERE id = $1")
+            .bind(attachment_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some((task_id, storage_path)) = row else {
+        return Err(AppError::NotFound);
+    };
+    let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query("DELETE FROM attachments WHERE id = $1")
+        .bind(attachment_id)
+        .execute(&mut *tx)
+        .await?;
+    touch_task(&mut *tx, task_id).await?;
+    record_audit(
+        &mut *tx,
+        workspace_id,
+        user_id,
+        "deleted attachment",
+        "task",
+        Some(task_id),
+    )
+    .await?;
+    tx.commit().await?;
+
+    // The row is gone; a leftover file only wastes space, so log and move on.
+    if let Err(err) = fs::remove_file(&storage_path).await {
+        tracing::warn!(%storage_path, %err, "could not remove deleted attachment file");
+    }
+
+    notify_workspace(&state, &headers, workspace_id, "attachment");
+    Ok(Json(fetch_task(&state.db, task_id).await?))
 }
 
 async fn read_notification(

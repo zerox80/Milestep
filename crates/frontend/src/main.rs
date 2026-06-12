@@ -1664,6 +1664,18 @@ fn task_detail(
     let members_for_assign = boot.members.clone();
     let member_names: Vec<String> = boot.members.iter().map(|m| m.name.clone()).collect();
 
+    let delete_attachment = Callback::new(move |attachment_id: String| {
+        spawn_local(async move {
+            match api_delete::<TaskDto>(&format!("/api/attachments/{attachment_id}")).await {
+                Ok(task) => {
+                    replace_task(set_data, task);
+                    set_error.set(None);
+                }
+                Err(err) => set_error.set(Some(err.message)),
+            }
+        });
+    });
+
     let task_id_for_save = task.id.clone();
     let save = move |_| {
         if title_edit.get_untracked().trim().is_empty() {
@@ -1915,7 +1927,7 @@ fn task_detail(
             <section>
                 <h3>{move || if lang.get() == Lang::De { "Anhaenge" } else { "Attachments" }}</h3>
                 <div class="attachments">
-                    {attachments.into_iter().map(|a| attachment_view(a, lang)).collect_view()}
+                    {attachments.into_iter().map(|a| attachment_view(a, lang, can_edit.then_some((editing, delete_attachment)))).collect_view()}
                 </div>
                 {move || (can_edit && editing.get()).then(|| {
                     let task_id = task_id_for_upload.clone();
@@ -2627,6 +2639,16 @@ async fn api_empty(url: &str) -> Result<(), ApiError> {
     }
 }
 
+async fn api_delete<T: DeserializeOwned>(url: &str) -> Result<T, ApiError> {
+    let response = Request::delete(url)
+        .credentials(RequestCredentials::SameOrigin)
+        .header("x-client-id", &client_id())
+        .send()
+        .await
+        .map_err(ApiError::network)?;
+    decode_response(response).await
+}
+
 async fn api_delete_empty(url: &str) -> Result<(), ApiError> {
     let response = Request::delete(url)
         .credentials(RequestCredentials::SameOrigin)
@@ -2833,12 +2855,45 @@ fn attachment_ext(file_name: &str) -> String {
 
 /// Attachment chip plus an inline preview: images render directly, PDFs get
 /// a toggleable iframe, everything else stays a plain download link.
-fn attachment_view(a: AttachmentDto, lang: ReadSignal<Lang>) -> View {
+fn attachment_view(
+    a: AttachmentDto,
+    lang: ReadSignal<Lang>,
+    // Editing signal + delete callback; None hides the delete control entirely.
+    delete: Option<(ReadSignal<bool>, Callback<String>)>,
+) -> View {
     let ext = attachment_ext(&a.file_name);
     let inline_url = format!("/api/attachments/{}?inline=1", a.id);
     let download_url = format!("/api/attachments/{}", a.id);
+    let delete_btn = delete.map(|(editing, on_delete)| {
+        let attachment_id = a.id.clone();
+        let file_name = a.file_name.clone();
+        view! {
+            {move || editing.get().then(|| {
+                let attachment_id = attachment_id.clone();
+                let file_name = file_name.clone();
+                view! {
+                    <button class="danger-link" on:click=move |_| {
+                        let confirm_text = if lang.get_untracked() == Lang::De {
+                            format!("Anhang {file_name} wirklich loeschen?")
+                        } else {
+                            format!("Delete attachment {file_name}?")
+                        };
+                        let confirmed = web_sys::window()
+                            .and_then(|w| w.confirm_with_message(&confirm_text).ok())
+                            .unwrap_or(false);
+                        if confirmed {
+                            on_delete.call(attachment_id.clone());
+                        }
+                    }>{move || if lang.get() == Lang::De { "Loeschen" } else { "Delete" }}</button>
+                }
+            })}
+        }
+    });
     let chip = view! {
-        <a class="file-chip" href=download_url download>"Datei "{a.file_name.clone()}<small>{a.size_label.clone()}</small></a>
+        <span class="file-chip-row">
+            <a class="file-chip" href=download_url download>"Datei "{a.file_name.clone()}<small>{a.size_label.clone()}</small></a>
+            {delete_btn}
+        </span>
     };
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "webp" => {
