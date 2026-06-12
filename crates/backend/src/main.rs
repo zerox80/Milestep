@@ -1893,25 +1893,21 @@ async fn delete_user(
         ));
     }
 
-    let actor_membership: MembershipWorkspaceRow = sqlx::query_as(
-        "SELECT workspace_id, user_id, role \
-         FROM memberships WHERE user_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+    // The actor must own a workspace the target is a member of; a Forbidden
+    // for unknown target ids keeps this from acting as a user-id oracle.
+    let shared_workspace: (Uuid,) = sqlx::query_as(
+        "SELECT a.workspace_id \
+         FROM memberships a \
+         JOIN memberships t ON t.workspace_id = a.workspace_id \
+         WHERE a.user_id = $1 AND a.role = 'owner' AND a.status = 'active' \
+         AND t.user_id = $2 AND t.status = 'active' \
+         ORDER BY a.created_at ASC LIMIT 1",
     )
     .bind(actor_id)
+    .bind(target_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::Forbidden)?;
-    if role_from_db(&actor_membership.role)? != Role::Owner {
-        return Err(AppError::Forbidden);
-    }
-
-    let target_exists: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE id = $1")
-        .bind(target_id)
-        .fetch_optional(&state.db)
-        .await?;
-    if target_exists.is_none() {
-        return Err(AppError::NotFound);
-    }
 
     let mut tx = state.db.begin().await?;
     let target_memberships: Vec<MembershipWorkspaceRow> = sqlx::query_as(
@@ -1964,7 +1960,7 @@ async fn delete_user(
         .await?;
     record_audit(
         &mut *tx,
-        actor_membership.workspace_id,
+        shared_workspace.0,
         actor_id,
         "deleted user",
         "user",
@@ -2520,8 +2516,8 @@ async fn fetch_registered_users(
         "SELECT u.id, u.email, u.name, u.created_at, \
                 m.id AS membership_id, m.role \
          FROM users u \
-         LEFT JOIN memberships m ON m.user_id = u.id \
-             AND m.workspace_id = $1 AND m.status = 'active' \
+         JOIN memberships m ON m.user_id = u.id \
+         WHERE m.workspace_id = $1 AND m.status = 'active' \
          ORDER BY u.created_at DESC, u.email",
     )
     .bind(workspace_id)
