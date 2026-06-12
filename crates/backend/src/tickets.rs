@@ -1,0 +1,216 @@
+use crate::*;
+
+pub(crate) async fn list_tickets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<TicketDto>>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let bootstrap = fetch_bootstrap(&state.db, uuid_from_str(&ctx.user.id)?).await?;
+    Ok(Json(bootstrap.tickets))
+}
+
+pub(crate) async fn get_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<TicketDto>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let ticket_id = uuid_from_str(&id)?;
+    assert_ticket_read(&state.db, uuid_from_str(&ctx.user.id)?, ticket_id).await?;
+    Ok(Json(fetch_ticket(&state.db, ticket_id).await?))
+}
+
+pub(crate) async fn create_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateTicketRequest>,
+) -> Result<Json<TicketDto>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let user_id = uuid_from_str(&ctx.user.id)?;
+    let project_id = uuid_from_str(&payload.project_id)?;
+    let workspace_id = assert_project_edit(&state.db, user_id, project_id).await?;
+
+    if payload.title.trim().is_empty() {
+        return Err(AppError::BadRequest("ticket title is required".into()));
+    }
+
+    let assignee_id = payload
+        .assignee_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(uuid_from_str)
+        .transpose()?;
+
+    let mut tx = state.db.begin().await?;
+    if let Some(assignee_id) = assignee_id {
+        assert_user_in_project(&mut *tx, project_id, assignee_id).await?;
+    }
+
+    // Serializes key generation per project so concurrent creates cannot collide.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("tickets:{project_id}"))
+        .execute(&mut *tx)
+        .await?;
+    let (project_key,): (String,) = sqlx::query_as("SELECT key FROM projects WHERE id = $1")
+        .bind(project_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let next: (i32,) = sqlx::query_as(
+        "SELECT COALESCE(MAX(split_part(key, '-', 3)::INT), 0) + 1 \
+         FROM tickets WHERE project_id = $1 AND key LIKE $2 || '-T-%' \
+         AND split_part(key, '-', 3) ~ '^[0-9]+$'",
+    )
+    .bind(project_id)
+    .bind(&project_key)
+    .fetch_one(&mut *tx)
+    .await?;
+    let key = format!("{}-T-{}", project_key, next.0);
+
+    let ticket_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO tickets \
+         (id, project_id, key, title, description, status, priority, requester_name, assignee_id, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(ticket_id)
+    .bind(project_id)
+    .bind(&key)
+    .bind(payload.title.trim())
+    .bind(payload.description.trim())
+    .bind(ticket_status_to_db(&payload.status))
+    .bind(priority_to_db(&payload.priority))
+    .bind(payload.requester_name.trim())
+    .bind(assignee_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    record_audit(
+        &mut *tx,
+        workspace_id,
+        user_id,
+        "created ticket",
+        "ticket",
+        Some(ticket_id),
+    )
+    .await?;
+    tx.commit().await?;
+    notify_workspace(&state, &ctx, &headers, workspace_id, "ticket");
+    Ok(Json(fetch_ticket(&state.db, ticket_id).await?))
+}
+
+pub(crate) async fn update_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateTicketRequest>,
+) -> Result<Json<TicketDto>, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let user_id = uuid_from_str(&ctx.user.id)?;
+    let ticket_id = uuid_from_str(&id)?;
+    let workspace_id = assert_ticket_edit(&state.db, user_id, ticket_id).await?;
+
+    if let Some(title) = &payload.title {
+        if title.trim().is_empty() {
+            return Err(AppError::BadRequest("ticket title is required".into()));
+        }
+    }
+
+    let mut tx = state.db.begin().await?;
+    if let Some(title) = payload.title {
+        sqlx::query("UPDATE tickets SET title = $1, updated_at = now() WHERE id = $2")
+            .bind(title.trim())
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(description) = payload.description {
+        sqlx::query("UPDATE tickets SET description = $1, updated_at = now() WHERE id = $2")
+            .bind(description.trim())
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(status) = payload.status {
+        sqlx::query("UPDATE tickets SET status = $1, updated_at = now() WHERE id = $2")
+            .bind(ticket_status_to_db(&status))
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(priority) = payload.priority {
+        sqlx::query("UPDATE tickets SET priority = $1, updated_at = now() WHERE id = $2")
+            .bind(priority_to_db(&priority))
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(requester_name) = payload.requester_name {
+        sqlx::query("UPDATE tickets SET requester_name = $1, updated_at = now() WHERE id = $2")
+            .bind(requester_name.trim())
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(assignee_id) = payload.assignee_id {
+        let assignee_id = assignee_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(uuid_from_str)
+            .transpose()?;
+        if let Some(assignee_id) = assignee_id {
+            let (project_id,): (Uuid,) =
+                sqlx::query_as("SELECT project_id FROM tickets WHERE id = $1")
+                    .bind(ticket_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            assert_user_in_project(&mut *tx, project_id, assignee_id).await?;
+        }
+        sqlx::query("UPDATE tickets SET assignee_id = $1, updated_at = now() WHERE id = $2")
+            .bind(assignee_id)
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    record_audit(
+        &mut *tx,
+        workspace_id,
+        user_id,
+        "updated ticket",
+        "ticket",
+        Some(ticket_id),
+    )
+    .await?;
+    tx.commit().await?;
+    notify_workspace(&state, &ctx, &headers, workspace_id, "ticket");
+    Ok(Json(fetch_ticket(&state.db, ticket_id).await?))
+}
+
+pub(crate) async fn delete_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let ctx = require_auth(&state, &headers).await?;
+    let user_id = uuid_from_str(&ctx.user.id)?;
+    let ticket_id = uuid_from_str(&id)?;
+    let workspace_id = assert_ticket_edit(&state.db, user_id, ticket_id).await?;
+    let mut tx = state.db.begin().await?;
+    sqlx::query("DELETE FROM tickets WHERE id = $1")
+        .bind(ticket_id)
+        .execute(&mut *tx)
+        .await?;
+    record_audit(
+        &mut *tx,
+        workspace_id,
+        user_id,
+        "deleted ticket",
+        "ticket",
+        Some(ticket_id),
+    )
+    .await?;
+    tx.commit().await?;
+    notify_workspace(&state, &ctx, &headers, workspace_id, "ticket");
+    Ok(StatusCode::NO_CONTENT)
+}

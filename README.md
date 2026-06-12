@@ -20,6 +20,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 Push-Location crates/frontend
 trunk build --release
+# Moves trunk's inline bootstrap into /init.js; required because the CSP
+# does not allow inline scripts (use python3 instead of py on Linux/macOS).
+py externalize-init.py dist
 Pop-Location
 cargo build --release -p kowobau-backend
 ```

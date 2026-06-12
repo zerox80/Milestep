@@ -1,0 +1,450 @@
+use crate::*;
+
+pub(crate) fn task_detail(
+    task: TaskDto,
+    boot: BootstrapDto,
+    lang: ReadSignal<Lang>,
+    set_open_task: WriteSignal<Option<String>>,
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    set_error: WriteSignal<Option<String>>,
+) -> View {
+    let (comment, set_comment) = create_signal(String::new());
+    let (editing, set_editing) = create_signal(false);
+    let (title_edit, set_title_edit) = create_signal(task.title.clone());
+    let (description_edit, set_description_edit) = create_signal(task.description.clone());
+    let (status_edit, set_status_edit) = create_signal(task.status_id.clone());
+    let (priority_edit, set_priority_edit) = create_signal(task.priority.clone());
+    let (due_date_edit, set_due_date_edit) =
+        create_signal(task.due_date.clone().unwrap_or_default());
+    let (phase_edit, set_phase_edit) = create_signal(task.phase.clone());
+    let (assignee_edit, set_assignee_edit) =
+        create_signal(task.assignee_ids.first().cloned().unwrap_or_default());
+    let (recurrence_edit, set_recurrence_edit) = create_signal(task.recurrence);
+    let (busy, set_busy) = create_signal(false);
+    let (local_error, set_local_error) = create_signal::<Option<String>>(None);
+    let (uploading, set_uploading) = create_signal(false);
+    let (mention_open, set_mention_open) = create_signal(false);
+    let (mention_index, set_mention_index) = create_signal(0usize);
+    let mention_members = store_value(boot.members.clone());
+    // Editing or a half-typed comment must not be wiped by a background refetch.
+    hold_realtime_while(move || editing.get() || !comment.get().trim().is_empty());
+
+    let status_label = boot
+        .statuses
+        .iter()
+        .find(|s| s.id == task.status_id)
+        .map(|s| status_name(s, lang.get()).to_string())
+        .unwrap_or_default();
+    let title = task_title(&task, lang.get());
+    let description = description_for(&task, lang.get());
+    let assignees = task.assignee_ids.clone();
+    let due = task
+        .due_date
+        .as_deref()
+        .map_or_else(|| "-".into(), |d| fmt_date(d, lang.get()));
+    let priority = priority_label(&task.priority, lang.get()).to_string();
+    let task_recurrence = task.recurrence;
+    let project_line = format!("{} / {}", task.tag, boot.project.name);
+    let pct = subtask_pct(&task);
+    let subtasks = task.subtasks.clone();
+    let attachments = task.attachments.clone();
+    let comments = task.comments.clone();
+    let can_edit = boot.current_role.can_edit();
+    let task_id_base = task.id.clone();
+    let task_id_for_upload = task.id.clone();
+    let statuses_for_status_options = boot.statuses.clone();
+    let members_for_display = boot.members.clone();
+    let members_for_assign = boot.members.clone();
+    let member_names: Vec<String> = boot.members.iter().map(|m| m.name.clone()).collect();
+
+    let delete_attachment = Callback::new(move |attachment_id: String| {
+        spawn_local(async move {
+            match api_delete::<TaskDto>(&format!("/api/attachments/{attachment_id}")).await {
+                Ok(task) => {
+                    replace_task(set_data, task);
+                    set_error.set(None);
+                }
+                Err(err) => set_error.set(Some(err.message)),
+            }
+        });
+    });
+
+    let task_id_for_save = task.id.clone();
+    let save = move |_| {
+        if title_edit.get_untracked().trim().is_empty() {
+            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
+                "Bitte gib zuerst einen Aufgabentitel ein.".into()
+            } else {
+                "Add a task title first.".into()
+            }));
+            return;
+        }
+        set_local_error.set(None);
+        set_busy.set(true);
+        let assignee = assignee_edit.get_untracked();
+        let assignee_ids = if assignee.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![assignee]
+        };
+        let due_date = due_date_edit.get_untracked();
+        let payload = UpdateTaskRequest {
+            title: Some(title_edit.get_untracked()),
+            description: Some(description_edit.get_untracked()),
+            tag: None,
+            tag_color: None,
+            priority: Some(priority_edit.get_untracked()),
+            status_id: Some(status_edit.get_untracked()),
+            start_date: None,
+            due_date: Some((!due_date.trim().is_empty()).then_some(due_date)),
+            phase: Some(phase_edit.get_untracked()),
+            recurrence: Some(recurrence_edit.get_untracked()),
+            assignee_ids: Some(assignee_ids),
+        };
+        let task_id = task_id_for_save.clone();
+        spawn_local(async move {
+            match api_patch::<_, TaskDto>(&format!("/api/tasks/{task_id}"), &payload).await {
+                Ok(task) => {
+                    replace_task(set_data, task);
+                    set_editing.set(false);
+                    set_error.set(None);
+                }
+                Err(err) => {
+                    set_local_error.set(Some(err.message.clone()));
+                    set_error.set(Some(err.message));
+                }
+            }
+            set_busy.set(false);
+        });
+    };
+
+    let task_id_for_delete = task.id.clone();
+    let title_for_delete = title.clone();
+    let delete = move |_| {
+        let confirm_text = if lang.get_untracked() == Lang::De {
+            format!("{title_for_delete} wirklich loeschen?")
+        } else {
+            format!("Delete {title_for_delete}?")
+        };
+        let confirmed = web_sys::window()
+            .and_then(|w| w.confirm_with_message(&confirm_text).ok())
+            .unwrap_or(false);
+        if !confirmed {
+            return;
+        }
+        let task_id = task_id_for_delete.clone();
+        spawn_local(async move {
+            match api_delete_empty(&format!("/api/tasks/{task_id}")).await {
+                Ok(()) => {
+                    remove_task(set_data, &task_id);
+                    set_open_task.set(None);
+                    set_error.set(None);
+                }
+                Err(err) => set_error.set(Some(err.message)),
+            }
+        });
+    };
+
+    let reset_title = task.title.clone();
+    let reset_description = task.description.clone();
+    let reset_status = task.status_id.clone();
+    let reset_priority = task.priority.clone();
+    let reset_due = task.due_date.clone().unwrap_or_default();
+    let reset_phase = task.phase.clone();
+    let reset_assignee = task.assignee_ids.first().cloned().unwrap_or_default();
+    let reset_recurrence = task.recurrence;
+
+    let mention_candidates = move || -> Vec<MemberDto> {
+        let value = comment.get();
+        let Some((_, query)) = mention_query(&value) else {
+            return Vec::new();
+        };
+        let query = query.to_lowercase();
+        mention_members.with_value(|members| {
+            members
+                .iter()
+                .filter(|m| m.name.to_lowercase().contains(&query))
+                .cloned()
+                .collect()
+        })
+    };
+    let pick_mention = move |name: String| {
+        let value = comment.get_untracked();
+        if let Some((at, _)) = mention_query(&value) {
+            set_comment.set(format!("{}@{name} ", &value[..at]));
+        }
+        set_mention_open.set(false);
+        set_mention_index.set(0);
+    };
+    let task_id_for_comment_submit = task.id.clone();
+    let submit_comment = move || {
+        let body = comment.get_untracked();
+        if !body.trim().is_empty() {
+            add_comment(
+                task_id_for_comment_submit.clone(),
+                body,
+                set_data,
+                set_error,
+            );
+            set_comment.set(String::new());
+            set_mention_open.set(false);
+        }
+    };
+    let submit_comment_for_button = submit_comment.clone();
+
+    view! {
+        <div class="drawer-backdrop" on:click=move |_| set_open_task.set(None)></div>
+        <aside class="task-drawer">
+            <header>
+                <span>{task.key.clone()}</span>
+                {move || if editing.get() {
+                    let current = status_edit.get_untracked();
+                    view! {
+                        <select class="compact-select" on:change=move |ev| set_status_edit.set(select_value(&ev))>
+                            {statuses_for_status_options.clone().into_iter().map(|s| {
+                                let selected = current == s.id;
+                                let label = status_name(&s, lang.get()).to_string();
+                                view! { <option value=s.id selected=selected>{label}</option> }
+                            }).collect_view()}
+                        </select>
+                    }.into_view()
+                } else {
+                    view! { <b>{status_label.clone()}</b> }.into_view()
+                }}
+                <span class="drawer-actions">
+                    {move || if editing.get() {
+                        view! { <span/> }.into_view()
+                    } else {
+                        view! {
+                            <button class="link-button" on:click=move |_| set_editing.set(true)>
+                                {move || if lang.get() == Lang::De { "Bearbeiten" } else { "Edit" }}
+                            </button>
+                        }.into_view()
+                    }}
+                    <button class="danger-link" on:click=delete>{move || if lang.get() == Lang::De { "Loeschen" } else { "Delete" }}</button>
+                    <button class="drawer-close" on:click=move |_| set_open_task.set(None)>"x"</button>
+                </span>
+            </header>
+            {move || if editing.get() {
+                view! {
+                    <label class="drawer-field title-field">
+                        <span>{move || if lang.get() == Lang::De { "Titel" } else { "Title" }}</span>
+                        <input class="title-input" prop:value=title_edit on:input=move |ev| {
+                            set_title_edit.set(event_target_value(&ev));
+                            set_local_error.set(None);
+                        }/>
+                    </label>
+                }.into_view()
+            } else {
+                view! { <h2>{title.clone()}</h2> }.into_view()
+            }}
+            {move || if editing.get() {
+                let current_assignee = assignee_edit.get_untracked();
+                let current_priority = priority_edit.get_untracked();
+                let current_phase = phase_edit.get_untracked();
+                let current_recurrence = recurrence_edit.get_untracked();
+                view! {
+                    <div class="detail-meta">
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Zuweisen" } else { "Assign" }}</small>
+                            <select on:change=move |ev| set_assignee_edit.set(select_value(&ev))>
+                                <option value="" selected=current_assignee.is_empty()>{move || if lang.get() == Lang::De { "Nicht zugewiesen" } else { "Unassigned" }}</option>
+                                {members_for_assign.clone().into_iter().map(|m| {
+                                    let selected = current_assignee == m.user_id;
+                                    view! { <option value=m.user_id selected=selected>{m.name}</option> }
+                                }).collect_view()}
+                            </select>
+                        </span>
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Faelligkeit" } else { "Due date" }}</small>
+                            <input type="date" prop:value=due_date_edit on:input=move |ev| set_due_date_edit.set(event_target_value(&ev))/>
+                        </span>
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Prioritaet" } else { "Priority" }}</small>
+                            <select on:change=move |ev| set_priority_edit.set(priority_from_value(&select_value(&ev)))>
+                                <option value="urgent" selected=current_priority == Priority::Urgent>{move || if lang.get() == Lang::De { "Dringend" } else { "Urgent" }}</option>
+                                <option value="high" selected=current_priority == Priority::High>{move || if lang.get() == Lang::De { "Hoch" } else { "High" }}</option>
+                                <option value="medium" selected=current_priority == Priority::Medium>{move || if lang.get() == Lang::De { "Mittel" } else { "Medium" }}</option>
+                                <option value="low" selected=current_priority == Priority::Low>{move || if lang.get() == Lang::De { "Niedrig" } else { "Low" }}</option>
+                            </select>
+                        </span>
+                        <span>
+                            <small>"Phase"</small>
+                            <select on:change=move |ev| set_phase_edit.set(select_value(&ev))>
+                                <option value="planung" selected=current_phase == "planung">{move || if lang.get() == Lang::De { "Planung" } else { "Planning" }}</option>
+                                <option value="vergabe" selected=current_phase == "vergabe">{move || if lang.get() == Lang::De { "Vergabe" } else { "Tendering" }}</option>
+                                <option value="ausfuehrung" selected=current_phase == "ausfuehrung">{move || if lang.get() == Lang::De { "Ausfuehrung" } else { "Execution" }}</option>
+                                <option value="abnahme" selected=current_phase == "abnahme">{move || if lang.get() == Lang::De { "Abnahme" } else { "Handover" }}</option>
+                            </select>
+                        </span>
+                        <span>
+                            <small>{move || if lang.get() == Lang::De { "Wiederholung" } else { "Repeat" }}</small>
+                            <select on:change=move |ev| set_recurrence_edit.set(recurrence_from_value(&select_value(&ev)))>
+                                {recurrence_options(current_recurrence, lang)}
+                            </select>
+                        </span>
+                    </div>
+                }.into_view()
+            } else {
+                view! {
+                    <div class="detail-meta">
+                        <span><small>{move || if lang.get() == Lang::De { "Zuweisen" } else { "Assign" }}</small>{assignee_avatars(&assignees, &members_for_display)}</span>
+                        <span><small>{move || if lang.get() == Lang::De { "Faelligkeit" } else { "Due date" }}</small><b>{due.clone()}</b></span>
+                        <span><small>{move || if lang.get() == Lang::De { "Prioritaet" } else { "Priority" }}</small><b>{priority.clone()}</b></span>
+                        <span><small>{move || if lang.get() == Lang::De { "Wiederholung" } else { "Repeat" }}</small><b>{move || recurrence_label(task_recurrence.as_ref(), lang.get())}</b></span>
+                        <span><small>{move || if lang.get() == Lang::De { "Projekt" } else { "Project" }}</small><b>{project_line.clone()}</b></span>
+                    </div>
+                }.into_view()
+            }}
+            <section>
+                <h3>{move || if lang.get() == Lang::De { "Beschreibung" } else { "Description" }}</h3>
+                {move || if editing.get() {
+                    view! {
+                        <textarea class="drawer-textarea" prop:value=description_edit on:input=move |ev| set_description_edit.set(textarea_value(&ev))></textarea>
+                    }.into_view()
+                } else {
+                    view! { <p>{description.clone()}</p> }.into_view()
+                }}
+            </section>
+            <section>
+                <h3>{move || if lang.get() == Lang::De { "Unteraufgaben" } else { "Subtasks" }}</h3>
+                <div class="progress-line"><i style=format!("width:{pct}%")></i></div>
+                {subtasks.into_iter().map(|sub| {
+                    let task_id = task_id_base.clone();
+                    let sub_id = sub.id.clone();
+                    let done = sub.done;
+                    let label = title_for(sub.title, sub.title_en, lang.get());
+                    view! {
+                        <label class="subtask">
+                            <input type="checkbox" checked=done on:change=move |_| toggle_subtask(task_id.clone(), sub_id.clone(), !done, set_data, set_error)/>
+                            <span>{label}</span>
+                        </label>
+                    }
+                }).collect_view()}
+            </section>
+            <section>
+                <h3>{move || if lang.get() == Lang::De { "Anhaenge" } else { "Attachments" }}</h3>
+                <div class="attachments">
+                    {attachments.into_iter().map(|a| attachment_view(a, lang, can_edit.then_some((editing, delete_attachment)))).collect_view()}
+                </div>
+                {move || (can_edit && editing.get()).then(|| {
+                    let task_id = task_id_for_upload.clone();
+                    view! {
+                    <div class="upload-row">
+                        // A label wrapping the input opens the file dialog natively.
+                        // Calling input.click() from a Leptos click handler re-enters
+                        // the delegated handler and panics the wasm app.
+                        <label class="btn ghost upload-btn" class:disabled=uploading>
+                            <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.svg,.csv,.xlsx,.docx,.txt,.json,.zip,.dwg,.ifc" style="display:none" disabled=uploading on:change=move |ev| {
+                                let input = event_target::<web_sys::HtmlInputElement>(&ev);
+                                if let Some(files) = input.files() {
+                                    if files.length() > 0 {
+                                        upload_attachments(task_id.clone(), files, set_uploading, set_data, set_error);
+                                    }
+                                }
+                                input.set_value("");
+                            }/>
+                            {move || match (uploading.get(), lang.get() == Lang::De) {
+                                (true, true) => "Lädt hoch...",
+                                (true, false) => "Uploading...",
+                                (false, true) => "+ Datei hochladen",
+                                (false, false) => "+ Upload file",
+                            }}
+                        </label>
+                    </div>
+                    }
+                })}
+            </section>
+            <section>
+                <h3>{move || if lang.get() == Lang::De { "Kommentare" } else { "Comments" }}</h3>
+                {comments.into_iter().map(|c| {
+                    let created = if lang.get() == Lang::De { c.created_label_de } else { c.created_label_en };
+                    let body = comment_body_view(&c.body, &member_names);
+                    view! { <div class="comment"><span class="avatar tiny">{c.author_initials}</span><p><strong>{c.author_name}</strong><br/>{body}</p><small>{created}</small></div> }
+                }).collect_view()}
+                <div class="comment-box">
+                    {move || {
+                        let candidates = mention_candidates();
+                        (mention_open.get() && !candidates.is_empty()).then(|| view! {
+                            <div class="mention-pop">
+                                {candidates.into_iter().enumerate().map(|(i, m)| {
+                                    let name = m.name.clone();
+                                    view! {
+                                        <button type="button" class="mention-item" class:active=move || mention_index.get() == i
+                                            on:mousedown=move |ev| {
+                                                // Pick before the input loses focus.
+                                                ev.prevent_default();
+                                                pick_mention(name.clone());
+                                            }>
+                                            <span class="avatar tiny">{m.initials}</span>
+                                            <span class="mention-name">{m.name}</span>
+                                            <small>{m.email}</small>
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        })
+                    }}
+                    <input
+                        placeholder=move || if lang.get() == Lang::De { "Kommentar schreiben... (@ erwähnt)" } else { "Write a comment... (@ mentions)" }
+                        prop:value=comment
+                        on:input=move |ev| {
+                            let value = event_target_value(&ev);
+                            set_mention_open.set(mention_query(&value).is_some());
+                            set_mention_index.set(0);
+                            set_comment.set(value);
+                        }
+                        on:keydown=move |ev| {
+                            // The popup only counts as active while it has
+                            // candidates; a query without matches must not
+                            // swallow Enter (the user wants to submit).
+                            let candidates = if mention_open.get_untracked() {
+                                mention_candidates()
+                            } else {
+                                Vec::new()
+                            };
+                            if !candidates.is_empty() {
+                                match ev.key().as_str() {
+                                    "ArrowDown" => {
+                                        ev.prevent_default();
+                                        set_mention_index.update(|i| *i = (*i + 1) % candidates.len());
+                                    }
+                                    "ArrowUp" => {
+                                        ev.prevent_default();
+                                        set_mention_index.update(|i| *i = (*i + candidates.len() - 1) % candidates.len());
+                                    }
+                                    "Enter" | "Tab" => {
+                                        ev.prevent_default();
+                                        let index = mention_index.get_untracked().min(candidates.len() - 1);
+                                        pick_mention(candidates[index].name.clone());
+                                    }
+                                    "Escape" => set_mention_open.set(false),
+                                    _ => {}
+                                }
+                            } else if ev.key() == "Enter" {
+                                submit_comment();
+                            }
+                        }
+                    />
+                    <button on:click=move |_| submit_comment_for_button()>"Enter"</button>
+                </div>
+            </section>
+            <section class="drawer-edit-actions" style=move || if editing.get() { String::new() } else { "display:none".to_string() }>
+                {move || local_error.get().map(|err| view! { <div class="modal-error inline">{err}</div> })}
+                <button class="btn ghost" on:click=move |_| {
+                    set_title_edit.set(reset_title.clone());
+                    set_description_edit.set(reset_description.clone());
+                    set_status_edit.set(reset_status.clone());
+                    set_priority_edit.set(reset_priority.clone());
+                    set_due_date_edit.set(reset_due.clone());
+                    set_phase_edit.set(reset_phase.clone());
+                    set_assignee_edit.set(reset_assignee.clone());
+                    set_recurrence_edit.set(reset_recurrence);
+                    set_local_error.set(None);
+                    set_editing.set(false);
+                }>{move || if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }}</button>
+                <button class="btn primary" disabled=move || busy.get() on:click=save>{move || if lang.get() == Lang::De { "Speichern" } else { "Save" }}</button>
+            </section>
+        </aside>
+    }.into_view()
+}

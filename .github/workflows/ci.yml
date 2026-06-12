@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep every Rust source file reviewable: hard cap of 500 lines.
+      - name: Line-count gate (max 500 lines per .rs file)
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            n=$(wc -l < "$f")
+            if [ "$n" -gt 500 ]; then
+              echo "::error file=$f::$f has $n lines (max 500)"
+              fail=1
+            fi
+          done < <(git ls-files '*.rs')
+          exit $fail
+
+      # Pinned toolchain: nursery lints change between releases and would
+      # otherwise break CI on every rustup bump.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: clippy frontend (wasm target)
+        run: cargo clippy -p kowobau-frontend --target wasm32-unknown-unknown -- -D warnings
+
+      - name: tests
+        run: cargo test --workspace
+
+      - name: trunk build + CSP externalizer
+        run: |
+          cargo install trunk --version 0.21.14 --locked
+          cd crates/frontend
+          trunk build --release --public-url /
+          python3 externalize-init.py dist
+          if grep -Eq '<script[^>]*>[^<]' dist/index.html; then
+            echo '::error::dist/index.html still contains an inline script'
+            exit 1
+          fi

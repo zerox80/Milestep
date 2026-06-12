@@ -1,5 +1,9 @@
 FROM rust:1.95-bookworm AS chef
 WORKDIR /app
+# python3 runs the trunk post_build hook (crates/frontend/externalize-init.py).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 \
+  && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked \
   && cargo install trunk --version 0.21.14 --locked \
   && rustup target add wasm32-unknown-unknown
@@ -21,7 +25,10 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --target wasm32-unknown-unknown -p kowobau-frontend --recipe-path recipe.json
 COPY . .
 WORKDIR /app/crates/frontend
-RUN trunk build --release --public-url /
+# externalize-init.py moves trunk's inline bootstrap into /init.js so the CSP
+# can stay free of script-src 'unsafe-inline'.
+RUN trunk build --release --public-url / \
+  && python3 externalize-init.py dist
 
 FROM debian:bookworm-slim AS backend-runtime
 WORKDIR /app

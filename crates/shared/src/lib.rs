@@ -21,11 +21,11 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn can_admin(&self) -> bool {
+    pub const fn can_admin(&self) -> bool {
         matches!(self, Self::Owner | Self::Admin)
     }
 
-    pub fn can_edit(&self) -> bool {
+    pub const fn can_edit(&self) -> bool {
         matches!(self, Self::Owner | Self::Admin | Self::Member)
     }
 }
