@@ -1629,7 +1629,6 @@ fn task_detail(
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
     let (uploading, set_uploading) = create_signal(false);
-    let file_input = create_node_ref::<html::Input>();
     let (mention_open, set_mention_open) = create_signal(false);
     let (mention_index, set_mention_index) = create_signal(0usize);
     let mention_members = store_value(boot.members.clone());
@@ -1922,27 +1921,26 @@ fn task_detail(
                     let task_id = task_id_for_upload.clone();
                     view! {
                     <div class="upload-row">
-                        <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.svg,.csv,.xlsx,.docx,.txt,.json,.zip,.dwg,.ifc" style="display:none" node_ref=file_input on:change=move |ev| {
-                            let input = event_target::<web_sys::HtmlInputElement>(&ev);
-                            if let Some(files) = input.files() {
-                                if files.length() > 0 {
-                                    upload_attachments(task_id.clone(), files, set_uploading, set_data, set_error);
+                        // A label wrapping the input opens the file dialog natively.
+                        // Calling input.click() from a Leptos click handler re-enters
+                        // the delegated handler and panics the wasm app.
+                        <label class="btn ghost upload-btn" class:disabled=uploading>
+                            <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.svg,.csv,.xlsx,.docx,.txt,.json,.zip,.dwg,.ifc" style="display:none" disabled=uploading on:change=move |ev| {
+                                let input = event_target::<web_sys::HtmlInputElement>(&ev);
+                                if let Some(files) = input.files() {
+                                    if files.length() > 0 {
+                                        upload_attachments(task_id.clone(), files, set_uploading, set_data, set_error);
+                                    }
                                 }
-                            }
-                            input.set_value("");
-                        }/>
-                        <button class="btn ghost" disabled=uploading on:click=move |_| {
-                            if let Some(input) = file_input.get_untracked() {
-                                input.click();
-                            }
-                        }>
+                                input.set_value("");
+                            }/>
                             {move || match (uploading.get(), lang.get() == Lang::De) {
                                 (true, true) => "Lädt hoch...",
                                 (true, false) => "Uploading...",
                                 (false, true) => "+ Datei hochladen",
                                 (false, false) => "+ Upload file",
                             }}
-                        </button>
+                        </label>
                     </div>
                     }
                 })}
