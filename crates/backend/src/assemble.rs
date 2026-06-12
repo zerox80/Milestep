@@ -167,14 +167,18 @@ pub(crate) async fn fetch_milestones(
 pub(crate) async fn fetch_notifications(
     db: &PgPool,
     user_id: Uuid,
+    workspace_id: Uuid,
 ) -> Result<Vec<NotificationDto>, AppError> {
+    // Scoped to the active workspace: a user who belongs to several workspaces
+    // must not see notifications referencing tasks the bootstrap never loaded.
     let rows: Vec<NotificationRow> = sqlx::query_as(
         "SELECT n.id, n.kind, n.actor_id, u.name AS actor_name, n.task_id, n.milestone_id, \
                 n.text, n.text_en, n.unread, n.created_at \
          FROM notifications n LEFT JOIN users u ON u.id = n.actor_id \
-         WHERE n.user_id = $1 ORDER BY n.created_at DESC LIMIT 30",
+         WHERE n.user_id = $1 AND n.workspace_id = $2 ORDER BY n.created_at DESC LIMIT 30",
     )
     .bind(user_id)
+    .bind(workspace_id)
     .fetch_all(db)
     .await?;
 

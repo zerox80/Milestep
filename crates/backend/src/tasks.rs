@@ -5,8 +5,8 @@ pub(crate) async fn list_tasks(
     headers: HeaderMap,
 ) -> Result<Json<Vec<TaskDto>>, AppError> {
     let ctx = require_auth(&state, &headers).await?;
-    let bootstrap = fetch_bootstrap(&state.db, uuid_from_str(&ctx.user.id)?).await?;
-    Ok(Json(bootstrap.tasks))
+    let project_id = active_project_id(&state.db, uuid_from_str(&ctx.user.id)?).await?;
+    Ok(Json(fetch_tasks(&state.db, project_id).await?))
 }
 
 pub(crate) async fn get_task(

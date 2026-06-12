@@ -29,6 +29,9 @@ pub(crate) const INLINE_PREVIEW_EXTENSIONS: &[&str] = &["pdf", "png", "jpg", "jp
 // Bounded fanout queue for realtime events; slow sockets get a resync hint
 // instead of unbounded buffering.
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
+// Caps simultaneous realtime sockets per user so a single account cannot
+// exhaust connection/broadcast resources by opening sockets without bound.
+pub(crate) const MAX_WS_CONNECTIONS_PER_USER: usize = 8;
 
 // Equalizes login timing for unknown emails so account existence cannot be inferred.
 pub(crate) static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
@@ -62,6 +65,8 @@ pub(crate) struct AppState {
     pub(crate) cfg: AppConfig,
     pub(crate) auth_limiter: Arc<Mutex<HashMap<IpAddr, (Instant, u32)>>>,
     pub(crate) hash_permits: Arc<Semaphore>,
+    // Live realtime-socket count per user id, for the per-user connection cap.
+    pub(crate) ws_conns: Arc<Mutex<HashMap<Uuid, usize>>>,
     // Workspace-scoped realtime events, fanned out to every connected socket.
     pub(crate) events: broadcast::Sender<WorkspaceEventDto>,
 }

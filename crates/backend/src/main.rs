@@ -155,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         cfg,
         auth_limiter: Arc::new(Mutex::new(HashMap::new())),
         hash_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_HASHES)),
+        ws_conns: Arc::new(Mutex::new(HashMap::new())),
         events,
     };
     let app = build_router(state.clone());

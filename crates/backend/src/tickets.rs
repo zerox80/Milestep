@@ -5,8 +5,8 @@ pub(crate) async fn list_tickets(
     headers: HeaderMap,
 ) -> Result<Json<Vec<TicketDto>>, AppError> {
     let ctx = require_auth(&state, &headers).await?;
-    let bootstrap = fetch_bootstrap(&state.db, uuid_from_str(&ctx.user.id)?).await?;
-    Ok(Json(bootstrap.tickets))
+    let project_id = active_project_id(&state.db, uuid_from_str(&ctx.user.id)?).await?;
+    Ok(Json(fetch_tickets(&state.db, project_id).await?))
 }
 
 pub(crate) async fn get_ticket(

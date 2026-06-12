@@ -72,6 +72,9 @@ pub(crate) struct WsQuery {
     pub(crate) client_id: Option<String>,
 }
 
+// The slot-reservation lock is already confined to the smallest sensible block;
+// the lint's suggested restructuring cannot chain the entry/insert through it.
+#[allow(clippy::significant_drop_tightening)]
 pub(crate) async fn ws_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -96,13 +99,49 @@ pub(crate) async fn ws_handler(
     .fetch_optional(&state.db)
     .await?;
     let (workspace_id,) = membership.ok_or(AppError::Forbidden)?;
+
+    // Reserve a connection slot before upgrading so an over-limit client gets a
+    // plain HTTP error instead of a socket. The guard releases the slot on every
+    // exit path (including a failed upgrade) via Drop.
+    {
+        let mut conns = state.ws_conns.lock().expect("ws_conns lock poisoned");
+        let entry = conns.entry(user_id).or_insert(0);
+        if *entry >= MAX_WS_CONNECTIONS_PER_USER {
+            return Err(AppError::TooManyRequests);
+        }
+        *entry += 1;
+    }
+    let guard = WsConnGuard {
+        conns: state.ws_conns.clone(),
+        user_id,
+    };
+
     // Same session-id namespacing as notify_workspace; the raw client id is
     // useless to anyone without this connection's session cookie.
     let client_id = query
         .client_id
         .filter(|v| !v.is_empty() && v.len() <= 64)
         .map(|v| format!("{}:{v}", ctx.session_id));
-    Ok(ws.on_upgrade(move |socket| ws_loop(socket, state, workspace_id, client_id)))
+    Ok(ws.on_upgrade(move |socket| ws_loop(socket, state, workspace_id, client_id, guard)))
+}
+
+/// Releases this connection's per-user socket slot when dropped, so the count
+/// stays correct even if the upgrade future is dropped before `ws_loop` ends.
+pub(crate) struct WsConnGuard {
+    conns: Arc<Mutex<HashMap<Uuid, usize>>>,
+    user_id: Uuid,
+}
+
+impl Drop for WsConnGuard {
+    fn drop(&mut self) {
+        let mut conns = self.conns.lock().expect("ws_conns lock poisoned");
+        if let Some(count) = conns.get_mut(&self.user_id) {
+            *count -= 1;
+            if *count == 0 {
+                conns.remove(&self.user_id);
+            }
+        }
+    }
 }
 
 pub(crate) async fn ws_loop(
@@ -110,6 +149,8 @@ pub(crate) async fn ws_loop(
     state: AppState,
     workspace_id: Uuid,
     client_id: Option<String>,
+    // Held for the lifetime of the connection; releases the per-user slot on drop.
+    _guard: WsConnGuard,
 ) {
     use futures_util::{SinkExt, StreamExt};
 

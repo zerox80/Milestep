@@ -64,12 +64,16 @@ pub(crate) async fn invite_member(
             "cannot invite a member as owner".into(),
         ));
     }
-    let already_invited: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM workspace_invites WHERE workspace_id = $1 AND email = $2")
-            .bind(workspace_id)
-            .bind(&email)
-            .fetch_optional(&state.db)
-            .await?;
+    // Only an unexpired invite blocks a re-invite; an expired leftover row is
+    // refreshed via ON CONFLICT below instead of permanently blocking the email.
+    let already_invited: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM workspace_invites \
+         WHERE workspace_id = $1 AND email = $2 AND expires_at > now()",
+    )
+    .bind(workspace_id)
+    .bind(&email)
+    .fetch_optional(&state.db)
+    .await?;
     if already_invited.is_some() {
         return Err(AppError::Conflict("invite already exists".into()));
     }
@@ -124,7 +128,11 @@ pub(crate) async fn invite_member(
     let token = generate_invite_token();
     sqlx::query(
         "INSERT INTO workspace_invites (id, workspace_id, email, role, invited_by, token_hash, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (workspace_id, email) DO UPDATE SET \
+             role = EXCLUDED.role, invited_by = EXCLUDED.invited_by, \
+             token_hash = EXCLUDED.token_hash, expires_at = EXCLUDED.expires_at, \
+             created_at = now()",
     )
     .bind(Uuid::new_v4())
     .bind(workspace_id)

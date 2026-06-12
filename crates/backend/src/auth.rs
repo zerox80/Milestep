@@ -57,6 +57,20 @@ pub(crate) async fn register(
     let password_hash = hash_password_async(&state, payload.password.clone()).await?;
 
     let mut tx = state.db.begin().await?;
+    // The fast-path check above can race two concurrent first-user registrations
+    // through on an empty database. Re-check under a transaction-level advisory
+    // lock so at most one such registration can succeed.
+    if invite.is_none() && !state.cfg.registration_enabled {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('kowobau:registration'))")
+            .execute(&mut *tx)
+            .await?;
+        let (user_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(&mut *tx)
+            .await?;
+        if user_count > 0 {
+            return Err(AppError::Forbidden);
+        }
+    }
     let inserted =
         sqlx::query("INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4)")
             .bind(user_id)

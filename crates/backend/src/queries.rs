@@ -19,6 +19,28 @@ pub(crate) async fn fetch_workspace(db: &PgPool, id: Uuid) -> Result<WorkspaceDt
     Ok(row.into())
 }
 
+/// Resolves the user's primary (oldest) active workspace and its first project.
+/// Mirrors the scoping `fetch_bootstrap` uses, but without loading the whole
+/// bootstrap payload — for endpoints that only need a single collection.
+pub(crate) async fn active_project_id(db: &PgPool, user_id: Uuid) -> Result<Uuid, AppError> {
+    let (workspace_id,): (Uuid,) = sqlx::query_as(
+        "SELECT workspace_id FROM memberships \
+         WHERE user_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let (project_id,): (Uuid,) = sqlx::query_as(
+        "SELECT id FROM projects WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(workspace_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(project_id)
+}
+
 pub(crate) async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<BootstrapDto, AppError> {
     let user = fetch_user(db, user_id).await?;
     let membership: MembershipWorkspaceRow = sqlx::query_as(
@@ -54,7 +76,7 @@ pub(crate) async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<Bootst
     let tasks = fetch_tasks(db, project_id).await?;
     let tickets = fetch_tickets(db, project_id).await?;
     let milestones = fetch_milestones(db, project_id).await?;
-    let notifications = fetch_notifications(db, user_id).await?;
+    let notifications = fetch_notifications(db, user_id, membership.workspace_id).await?;
     let audit_events = fetch_audit_events(db, membership.workspace_id).await?;
     let current_role = role_from_db(&membership.role)?;
     let registered_users = if current_role.can_admin() {
@@ -160,11 +182,39 @@ pub(crate) async fn fetch_member(db: &PgPool, membership_id: Uuid) -> Result<Mem
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound)?;
-    let members = fetch_members(db, row.workspace_id).await?;
-    members
-        .into_iter()
-        .find(|m| m.id == membership_id.to_string())
-        .ok_or(AppError::NotFound)
+
+    // One targeted count for this member instead of aggregating the whole workspace.
+    let (open_tasks, done_tasks): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*) FILTER (WHERE NOT s.is_done), COUNT(*) FILTER (WHERE s.is_done) \
+         FROM task_assignees ta \
+         JOIN tasks t ON t.id = ta.task_id \
+         JOIN projects p ON p.id = t.project_id \
+         JOIN project_statuses s ON s.id = t.status_id \
+         WHERE p.workspace_id = $1 AND ta.user_id = $2",
+    )
+    .bind(row.workspace_id)
+    .bind(row.user_id)
+    .fetch_one(db)
+    .await?;
+
+    Ok(MemberDto {
+        id: row.id.to_string(),
+        user_id: row.user_id.to_string(),
+        workspace_id: row.workspace_id.to_string(),
+        initials: initials(&row.name),
+        name: row.name,
+        email: row.email,
+        role: role_from_db(&row.role)?,
+        status: member_status_from_db(&row.status)?,
+        last_active_label_de: row
+            .last_active_at
+            .map_or_else(|| "nie".to_string(), |t| relative_label(t, "de")),
+        last_active_label_en: row
+            .last_active_at
+            .map_or_else(|| "never".to_string(), |t| relative_label(t, "en")),
+        open_tasks,
+        done_tasks,
+    })
 }
 
 pub(crate) async fn fetch_registered_users(
