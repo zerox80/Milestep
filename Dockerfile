@@ -1,7 +1,7 @@
 FROM rust:1.95-bookworm AS chef
 WORKDIR /app
 RUN cargo install cargo-chef --locked \
-  && cargo install trunk --version 0.21.14 \
+  && cargo install trunk --version 0.21.14 --locked \
   && rustup target add wasm32-unknown-unknown
 
 FROM chef AS planner
