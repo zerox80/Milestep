@@ -53,6 +53,16 @@ pub(crate) enum AuthMode {
     Register,
 }
 
+fn boot_splash() -> View {
+    view! {
+        <main class="boot-page" aria-busy="true">
+            {logo()}
+            <span>"KoWoBau-Planner wird geladen..."</span>
+        </main>
+    }
+    .into_view()
+}
+
 fn main() {
     console_error_panic_hook::set_once();
     mount_to_body(|| {
@@ -152,6 +162,7 @@ pub(crate) fn AppRoot() -> impl IntoView {
                     set_data,
                     set_error,
                 ).into_view(),
+                None if loading.get() => boot_splash().into_view(),
                 None => auth_shell(lang, set_lang, reload, error, loading).into_view(),
             }}
         </div>

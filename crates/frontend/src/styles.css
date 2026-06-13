@@ -63,6 +63,9 @@ p { margin: 0; }
 .link-button { color: var(--accent-press); font-weight: 700; }
 .error-line { padding: 10px 12px; border-radius: 9px; background: var(--accent-soft); color: var(--accent-press); font-weight: 700; }
 
+.boot-page { min-height: 100vh; display: grid; place-content: center; gap: 14px; justify-items: center; color: var(--ink-2); font-weight: 700; }
+.boot-page .logo { color: var(--ink); }
+
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: 1.25fr .8fr; gap: 40px; padding: 32px; align-items: center; }
 .auth-brand { min-height: calc(100vh - 64px); display: flex; flex-direction: column; justify-content: space-between; padding: 22px 0; }
 .brand-row { display: flex; justify-content: space-between; align-items: center; }
