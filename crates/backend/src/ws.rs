@@ -79,6 +79,8 @@ pub(crate) fn notify_workspace_all(state: &AppState, workspace_id: Uuid, topic: 
 pub(crate) struct WsQuery {
     #[serde(default)]
     pub(crate) client_id: Option<String>,
+    #[serde(default)]
+    pub(crate) workspace_id: Option<String>,
 }
 
 // The slot-reservation lock is already confined to the smallest sensible block;
@@ -98,13 +100,22 @@ pub(crate) async fn ws_handler(
     }
     let ctx = require_auth(&state, &headers).await?;
     let user_id = uuid_from_str(&ctx.user.id)?;
-    // Same scoping rule as fetch_bootstrap: the first active membership
-    // decides which workspace this connection belongs to.
+    let selected_workspace = query
+        .workspace_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(uuid_from_str)
+        .transpose()?;
+    // Same scoping rule as fetch_bootstrap: an explicit workspace may be
+    // selected, otherwise the first active membership is used.
     let membership: Option<(Uuid,)> = sqlx::query_as(
         "SELECT workspace_id FROM memberships \
-         WHERE user_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+         WHERE user_id = $1 AND status = 'active' \
+         AND ($2::uuid IS NULL OR workspace_id = $2) \
+         ORDER BY created_at ASC LIMIT 1",
     )
     .bind(user_id)
+    .bind(selected_workspace)
     .fetch_optional(&state.db)
     .await?;
     let (workspace_id,) = membership.ok_or(AppError::Forbidden)?;

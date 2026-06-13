@@ -28,6 +28,8 @@ pub(crate) fn dashboard(
     let can_edit = boot.current_role.can_edit();
     let title = header_title(&boot, nav.get(), lang.get());
     let subtitle = header_subtitle(&boot, nav.get(), lang.get());
+    let current_workspace_id = boot.workspace.id.clone();
+    let workspaces = boot.workspaces.clone();
     let boot_for_main = boot.clone();
     let boot_for_open = boot.clone();
     let boot_for_ticket_open = boot.clone();
@@ -51,6 +53,20 @@ pub(crate) fn dashboard(
                         <strong>{boot.workspace.name.clone()}</strong>
                         <small>{format!("{} Mitglieder", boot.members.len())}</small>
                     </span>
+                    {if workspaces.len() > 1 {
+                        view! {
+                            <select class="workspace-select" on:change=move |ev| {
+                                switch_workspace(&select_value(&ev));
+                            }>
+                                {workspaces.into_iter().map(|workspace| {
+                                    let selected = workspace.id == current_workspace_id;
+                                    view! { <option value=workspace.id selected=selected>{workspace.name}</option> }
+                                }).collect_view()}
+                            </select>
+                        }.into_view()
+                    } else {
+                        view! { <span/> }.into_view()
+                    }}
                 </div>
 
                 <nav class="side-nav">

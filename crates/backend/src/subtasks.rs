@@ -14,7 +14,12 @@ pub(crate) async fn create_subtask(
         return Err(AppError::BadRequest("subtask title is required".into()));
     }
     let mut tx = state.db.begin().await?;
-    // Single statement so the next position is computed atomically.
+    // Serialize position generation per task so concurrent creates cannot
+    // assign the same position.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("subtasks:{task_id}"))
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
         "INSERT INTO subtasks (id, task_id, title, position) \
          SELECT $1, $2, $3, COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = $2",

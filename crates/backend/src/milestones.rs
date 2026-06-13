@@ -3,9 +3,11 @@ use crate::*;
 pub(crate) async fn list_milestones(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<WorkspaceQuery>,
 ) -> Result<Json<Vec<MilestoneDto>>, AppError> {
     let ctx = require_auth(&state, &headers).await?;
-    let project_id = active_project_id(&state.db, uuid_from_str(&ctx.user.id)?).await?;
+    let project_id =
+        active_project_id(&state.db, uuid_from_str(&ctx.user.id)?, query.workspace_uuid()?).await?;
     Ok(Json(fetch_milestones(&state.db, project_id).await?))
 }
 

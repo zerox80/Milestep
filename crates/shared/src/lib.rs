@@ -277,6 +277,7 @@ pub struct AuditEventDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootstrapDto {
     pub current_user: UserDto,
+    pub workspaces: Vec<WorkspaceDto>,
     pub workspace: WorkspaceDto,
     pub project: ProjectDto,
     pub current_role: Role,

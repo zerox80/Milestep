@@ -224,7 +224,7 @@ pub(crate) async fn refresh_bootstrap(
     set_data: WriteSignal<Option<BootstrapDto>>,
     set_error: WriteSignal<Option<String>>,
 ) {
-    match api_get::<BootstrapDto>("/api/bootstrap").await {
+    match api_get::<BootstrapDto>(&bootstrap_url()).await {
         Ok(next) => {
             set_data.set(Some(next));
             set_error.set(None);

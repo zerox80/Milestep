@@ -22,30 +22,30 @@ pub(crate) async fn register(
     }
 
     // Invite lookup happens before the expensive hash so bad tokens fail fast.
-    let invite: Option<(Uuid, Uuid, String)> =
-        match payload
-            .invite_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-        {
-            Some(token) => {
-                let row: Option<(Uuid, Uuid, String)> = sqlx::query_as(
-                    "SELECT id, workspace_id, role FROM workspace_invites \
-                 WHERE token_hash = $1 AND email = $2 AND expires_at > now()",
-                )
-                .bind(invite_token_hash(token))
-                .bind(&email)
-                .fetch_optional(&state.db)
-                .await?;
-                Some(row.ok_or_else(|| {
-                    AppError::BadRequest("invite code is invalid or expired".into())
-                })?)
-            }
-            None => None,
-        };
+    // The row is still claimed atomically inside the transaction below.
+    let invite_hash = payload
+        .invite_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(invite_token_hash);
+    if let Some(hash) = &invite_hash {
+        let exists: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM workspace_invites \
+             WHERE token_hash = $1 AND email = $2 AND expires_at > now()",
+        )
+        .bind(hash)
+        .bind(&email)
+        .fetch_optional(&state.db)
+        .await?;
+        if exists.is_none() {
+            return Err(AppError::BadRequest(
+                "invite code is invalid or expired".into(),
+            ));
+        }
+    }
 
-    if invite.is_none() && !state.cfg.registration_enabled {
+    if invite_hash.is_none() && !state.cfg.registration_enabled {
         let (user_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
             .fetch_one(&state.db)
             .await?;
@@ -61,7 +61,7 @@ pub(crate) async fn register(
     // The fast-path check above can race two concurrent first-user registrations
     // through on an empty database. Re-check under a transaction-level advisory
     // lock so at most one such registration can succeed.
-    if invite.is_none() && !state.cfg.registration_enabled {
+    if invite_hash.is_none() && !state.cfg.registration_enabled {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtext('kowobau:registration'))")
             .execute(&mut *tx)
             .await?;
@@ -87,21 +87,24 @@ pub(crate) async fn register(
         return Err(err.into());
     }
 
-    let workspace_id = match invite {
+    let workspace_id = match invite_hash {
         None => create_workspace_for_user(&mut tx, user_id, payload.name.trim()).await?,
-        Some((invite_id, invite_workspace, role)) => {
-            role_from_db(&role)?;
-            // Single-use: claim the row first; a concurrent registration with
-            // the same token loses and falls through to the error below.
-            let deleted = sqlx::query("DELETE FROM workspace_invites WHERE id = $1")
-                .bind(invite_id)
-                .execute(&mut *tx)
-                .await?;
-            if deleted.rows_affected() == 0 {
+        Some(hash) => {
+            let invite: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+                "DELETE FROM workspace_invites \
+                 WHERE token_hash = $1 AND email = $2 AND expires_at > now() \
+                 RETURNING id, workspace_id, role",
+            )
+            .bind(hash)
+            .bind(&email)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some((_invite_id, invite_workspace, role)) = invite else {
                 return Err(AppError::BadRequest(
                     "invite code is invalid or expired".into(),
                 ));
-            }
+            };
+            role_from_db(&role)?;
             sqlx::query(
                 "INSERT INTO memberships (id, workspace_id, user_id, role, status, last_active_at) \
                  VALUES ($1, $2, $3, $4, 'active', now()) \
@@ -214,8 +217,14 @@ pub(crate) async fn me(
 pub(crate) async fn bootstrap(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<WorkspaceQuery>,
 ) -> Result<Json<BootstrapDto>, AppError> {
     let ctx = require_auth(&state, &headers).await?;
-    let data = fetch_bootstrap(&state.db, uuid_from_str(&ctx.user.id)?).await?;
+    let data = fetch_bootstrap(
+        &state.db,
+        uuid_from_str(&ctx.user.id)?,
+        query.workspace_uuid()?,
+    )
+    .await?;
     Ok(Json(data))
 }

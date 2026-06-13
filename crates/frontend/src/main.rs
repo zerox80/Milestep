@@ -100,7 +100,7 @@ pub(crate) fn AppRoot() -> impl IntoView {
     let reload = move || {
         set_loading.set(true);
         spawn_local(async move {
-            match api_get::<BootstrapDto>("/api/bootstrap").await {
+            match api_get::<BootstrapDto>(&bootstrap_url()).await {
                 Ok(next) => {
                     set_data.set(Some(next));
                     set_error.set(None);

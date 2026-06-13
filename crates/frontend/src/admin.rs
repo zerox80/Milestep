@@ -74,7 +74,7 @@ pub(crate) fn admin_view(
                             .unwrap_or_default();
                         set_invite_result.set(Some(format!("{origin}{path}")));
                     } else {
-                        match api_get::<BootstrapDto>("/api/bootstrap").await {
+                        match api_get::<BootstrapDto>(&bootstrap_url()).await {
                             Ok(next) => {
                                 set_data.set(Some(next));
                                 set_invite_email.set(String::new());
@@ -108,7 +108,7 @@ pub(crate) fn admin_view(
             <section class="panel admin-toolbar">
                 <div>
                     <h3>{move || if lang.get() == Lang::De { "Verwaltung" } else { "Management" }}</h3>
-                    <p class="muted">{move || if lang.get() == Lang::De { "Mitglieder, Accounts und Rollen durchsuchen." } else { "Search members, accounts and roles." }}</p>
+                    <p class="muted">{move || if lang.get() == Lang::De { "Mitglieder, Workspace-Accounts und Rollen durchsuchen." } else { "Search members, workspace accounts and roles." }}</p>
                 </div>
                 <label class="admin-search">
                     <span>"⌕"</span>
@@ -120,9 +120,8 @@ pub(crate) fn admin_view(
                         {role_filter_options(lang)}
                     </select>
                     <select on:change=move |ev| set_account_role_filter.set(select_value(&ev))>
-                        <option value="all">{move || if lang.get() == Lang::De { "Alle Accounts" } else { "All accounts" }}</option>
+                        <option value="all">{move || if lang.get() == Lang::De { "Alle Workspace-Accounts" } else { "All workspace accounts" }}</option>
                         {role_filter_options(lang)}
-                        <option value="none">{move || if lang.get() == Lang::De { "Ohne Workspace" } else { "No workspace" }}</option>
                     </select>
                 </div>
             </section>
@@ -241,7 +240,7 @@ pub(crate) fn admin_view(
 
             <section class="panel admin-accounts-panel">
                 <div class="panel-head">
-                    <h3>{move || if lang.get() == Lang::De { "Registrierte Accounts" } else { "Registered accounts" }}</h3>
+                    <h3>{move || if lang.get() == Lang::De { "Workspace-Accounts" } else { "Workspace accounts" }}</h3>
                     <span class="admin-count">{registered_count}</span>
                 </div>
                 {if can_admin {
@@ -256,7 +255,7 @@ pub(crate) fn admin_view(
                                 .cloned()
                                 .collect::<Vec<_>>();
                             if rows.is_empty() {
-                                admin_empty(lang, "Keine passenden Accounts", "No matching accounts").into_view()
+                                admin_empty(lang, "Keine passenden Workspace-Accounts", "No matching workspace accounts").into_view()
                             } else {
                                 rows.into_iter().map(|user| {
                                     let email = user.email.clone();

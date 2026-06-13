@@ -19,18 +19,41 @@ pub(crate) async fn fetch_workspace(db: &PgPool, id: Uuid) -> Result<WorkspaceDt
     Ok(row.into())
 }
 
-/// Resolves the user's primary (oldest) active workspace and its first project.
-/// Mirrors the scoping `fetch_bootstrap` uses, but without loading the whole
-/// bootstrap payload — for endpoints that only need a single collection.
-pub(crate) async fn active_project_id(db: &PgPool, user_id: Uuid) -> Result<Uuid, AppError> {
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct WorkspaceQuery {
+    #[serde(default)]
+    pub(crate) workspace_id: Option<String>,
+}
+
+impl WorkspaceQuery {
+    pub(crate) fn workspace_uuid(&self) -> Result<Option<Uuid>, AppError> {
+        self.workspace_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(uuid_from_str)
+            .transpose()
+    }
+}
+
+/// Resolves the selected active workspace (or the user's oldest one) and its
+/// first project. Mirrors the scoping `fetch_bootstrap` uses.
+pub(crate) async fn active_project_id(
+    db: &PgPool,
+    user_id: Uuid,
+    workspace_id: Option<Uuid>,
+) -> Result<Uuid, AppError> {
     let (workspace_id,): (Uuid,) = sqlx::query_as(
         "SELECT workspace_id FROM memberships \
-         WHERE user_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+         WHERE user_id = $1 AND status = 'active' \
+         AND ($2::uuid IS NULL OR workspace_id = $2) \
+         ORDER BY created_at ASC LIMIT 1",
     )
     .bind(user_id)
+    .bind(workspace_id)
     .fetch_optional(db)
     .await?
-    .ok_or(AppError::NotFound)?;
+    .ok_or(AppError::Forbidden)?;
     let (project_id,): (Uuid,) = sqlx::query_as(
         "SELECT id FROM projects WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1",
     )
@@ -41,16 +64,23 @@ pub(crate) async fn active_project_id(db: &PgPool, user_id: Uuid) -> Result<Uuid
     Ok(project_id)
 }
 
-pub(crate) async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<BootstrapDto, AppError> {
+pub(crate) async fn fetch_bootstrap(
+    db: &PgPool,
+    user_id: Uuid,
+    workspace_id: Option<Uuid>,
+) -> Result<BootstrapDto, AppError> {
     let user = fetch_user(db, user_id).await?;
     let membership: MembershipWorkspaceRow = sqlx::query_as(
         "SELECT workspace_id, user_id, role \
-         FROM memberships WHERE user_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+         FROM memberships WHERE user_id = $1 AND status = 'active' \
+         AND ($2::uuid IS NULL OR workspace_id = $2) \
+         ORDER BY created_at ASC LIMIT 1",
     )
     .bind(user_id)
+    .bind(workspace_id)
     .fetch_optional(db)
     .await?
-    .ok_or(AppError::NotFound)?;
+    .ok_or(AppError::Forbidden)?;
 
     sqlx::query(
         "UPDATE memberships SET last_active_at = now() WHERE user_id = $1 AND workspace_id = $2",
@@ -84,9 +114,11 @@ pub(crate) async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<Bootst
     } else {
         Vec::new()
     };
+    let workspaces = fetch_user_workspaces(db, user_id).await?;
 
     Ok(BootstrapDto {
         current_user: user,
+        workspaces,
         workspace,
         project,
         current_role,
@@ -99,6 +131,23 @@ pub(crate) async fn fetch_bootstrap(db: &PgPool, user_id: Uuid) -> Result<Bootst
         notifications,
         audit_events,
     })
+}
+
+pub(crate) async fn fetch_user_workspaces(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<WorkspaceDto>, AppError> {
+    let rows: Vec<WorkspaceRow> = sqlx::query_as(
+        "SELECT w.id, w.name, w.url_slug, w.default_lang \
+         FROM workspaces w \
+         JOIN memberships m ON m.workspace_id = w.id \
+         WHERE m.user_id = $1 AND m.status = 'active' \
+         ORDER BY m.created_at ASC, w.name",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 pub(crate) async fn fetch_statuses(
@@ -225,7 +274,7 @@ pub(crate) async fn fetch_registered_users(
         "SELECT u.id, u.email, u.name, u.created_at, \
                 m.id AS membership_id, m.role \
          FROM users u \
-         LEFT JOIN memberships m ON m.user_id = u.id \
+         JOIN memberships m ON m.user_id = u.id \
               AND m.workspace_id = $1 AND m.status = 'active' \
          ORDER BY u.created_at DESC, u.email",
     )

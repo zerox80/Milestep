@@ -124,8 +124,12 @@ pub(crate) fn websocket_url() -> Option<String> {
         "ws"
     };
     let host = location.host().ok()?;
+    let workspace = selected_workspace_id_from_url()
+        .map(|id| format!("&workspace_id={id}"))
+        .unwrap_or_default();
     Some(format!(
-        "{protocol}://{host}/api/ws?client_id={}",
-        client_id()
+        "{protocol}://{host}/api/ws?client_id={}{}",
+        client_id(),
+        workspace
     ))
 }

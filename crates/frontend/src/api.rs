@@ -26,6 +26,36 @@ pub(crate) async fn api_get<T: DeserializeOwned>(url: &str) -> Result<T, ApiErro
     decode_response(response).await
 }
 
+pub(crate) fn selected_workspace_id_from_url() -> Option<String> {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|search| {
+            search
+                .trim_start_matches('?')
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("workspace=").map(str::to_string))
+        })
+        .filter(|id| !id.trim().is_empty())
+}
+
+pub(crate) fn bootstrap_url() -> String {
+    selected_workspace_id_from_url().map_or_else(
+        || "/api/bootstrap".to_string(),
+        |id| format!("/api/bootstrap?workspace_id={id}"),
+    )
+}
+
+pub(crate) fn switch_workspace(workspace_id: &str) {
+    if workspace_id.trim().is_empty() {
+        return;
+    }
+    if let Some(window) = web_sys::window() {
+        let _ = window
+            .location()
+            .set_search(&format!("?workspace={workspace_id}"));
+    }
+}
+
 pub(crate) async fn api_post<B: Serialize, T: DeserializeOwned>(
     url: &str,
     body: &B,
