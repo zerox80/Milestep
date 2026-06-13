@@ -41,9 +41,142 @@ pub(crate) async fn store_attachments(
     workspace_id: Uuid,
     written_paths: &mut Vec<PathBuf>,
 ) -> Result<(), AppError> {
+    let pending = read_pending_attachments(state, multipart).await?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let result = finalize_attachments(
+        state,
+        task_id,
+        user_id,
+        workspace_id,
+        written_paths,
+        &pending,
+    )
+    .await;
+    if result.is_err() {
+        for attachment in &pending {
+            let _ = fs::remove_file(&attachment.temp_path).await;
+        }
+    }
+    result
+}
+
+pub(crate) struct PendingAttachment {
+    pub(crate) attachment_id: Uuid,
+    pub(crate) file_name: String,
+    pub(crate) temp_path: PathBuf,
+    pub(crate) storage_path: PathBuf,
+    pub(crate) size_bytes: u64,
+}
+
+pub(crate) async fn read_pending_attachments(
+    state: &AppState,
+    multipart: &mut Multipart,
+) -> Result<Vec<PendingAttachment>, AppError> {
+    let mut pending = Vec::new();
+    while let Some(mut field) = match multipart.next_field().await {
+        Ok(field) => field,
+        Err(err) => {
+            cleanup_pending(&pending).await;
+            return Err(AppError::BadRequest(err.to_string()));
+        }
+    } {
+        let Some(file_name) = field.file_name().map(sanitize_file_name) else {
+            continue;
+        };
+        if !allowed_upload_extension(&file_name) {
+            cleanup_pending(&pending).await;
+            return Err(AppError::BadRequest(format!(
+                "file type of \"{file_name}\" is not allowed"
+            )));
+        }
+
+        let attachment_id = Uuid::new_v4();
+        let storage_name = format!("{attachment_id}-{file_name}");
+        let storage_path = state.cfg.upload_dir.join(&storage_name);
+        let temp_path = state
+            .cfg
+            .upload_dir
+            .join(format!(".{attachment_id}-{file_name}.tmp"));
+        let mut file = match fs::File::create(&temp_path).await {
+            Ok(file) => file,
+            Err(err) => {
+                cleanup_pending(&pending).await;
+                return Err(err.into());
+            }
+        };
+        let mut size_bytes: u64 = 0;
+        // First bytes of the file, for the magic-number check below.
+        let mut head: Vec<u8> = Vec::with_capacity(16);
+        while let Some(chunk) = match field.chunk().await {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                let _ = fs::remove_file(&temp_path).await;
+                cleanup_pending(&pending).await;
+                return Err(AppError::BadRequest(err.to_string()));
+            }
+        } {
+            size_bytes += chunk.len() as u64;
+            if head.len() < 16 {
+                head.extend_from_slice(&chunk[..chunk.len().min(16 - head.len())]);
+            }
+            if let Err(err) = file.write_all(&chunk).await {
+                let _ = fs::remove_file(&temp_path).await;
+                cleanup_pending(&pending).await;
+                return Err(err.into());
+            }
+        }
+        if let Err(err) = file.flush().await {
+            let _ = fs::remove_file(&temp_path).await;
+            cleanup_pending(&pending).await;
+            return Err(err.into());
+        }
+        drop(file);
+        if size_bytes == 0 {
+            let _ = fs::remove_file(&temp_path).await;
+            continue;
+        }
+        // Inline-previewable types are later served with an image/PDF MIME
+        // and Content-Disposition: inline; require the content to actually be
+        // that format so no foreign payload gets rendered inline.
+        if !magic_matches(&file_name, &head) {
+            let _ = fs::remove_file(&temp_path).await;
+            cleanup_pending(&pending).await;
+            return Err(AppError::BadRequest(format!(
+                "file content of \"{file_name}\" does not match its extension"
+            )));
+        }
+        pending.push(PendingAttachment {
+            attachment_id,
+            file_name,
+            temp_path,
+            storage_path,
+            size_bytes,
+        });
+    }
+    Ok(pending)
+}
+
+pub(crate) async fn cleanup_pending(pending: &[PendingAttachment]) {
+    for attachment in pending {
+        let _ = fs::remove_file(&attachment.temp_path).await;
+    }
+}
+
+pub(crate) async fn finalize_attachments(
+    state: &AppState,
+    task_id: Uuid,
+    user_id: Uuid,
+    workspace_id: Uuid,
+    written_paths: &mut Vec<PathBuf>,
+    pending: &[PendingAttachment],
+) -> Result<(), AppError> {
     let mut tx = state.db.begin().await?;
-    // Serializes uploads per workspace so concurrent requests cannot jointly
-    // exceed the storage quota checked below.
+    // Serializes quota checks and database inserts per workspace, but only
+    // after the request body has been streamed to temp files. Slow clients no
+    // longer hold a database transaction or advisory lock for the whole upload.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
         .bind(workspace_id.to_string())
         .execute(&mut *tx)
@@ -59,63 +192,16 @@ pub(crate) async fn store_attachments(
     .bind(workspace_id)
     .fetch_one(&mut *tx)
     .await?;
-    let mut remaining = (state.cfg.max_workspace_storage_bytes - used_bytes).max(0) as u64;
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?
-    {
-        let Some(file_name) = field.file_name().map(sanitize_file_name) else {
-            continue;
-        };
-        if !allowed_upload_extension(&file_name) {
-            return Err(AppError::BadRequest(format!(
-                "file type of \"{file_name}\" is not allowed"
-            )));
-        }
+    let requested_bytes: u64 = pending.iter().map(|attachment| attachment.size_bytes).sum();
+    let remaining = (state.cfg.max_workspace_storage_bytes - used_bytes).max(0) as u64;
+    if requested_bytes > remaining {
+        return Err(AppError::BadRequest(
+            "workspace storage limit exceeded".into(),
+        ));
+    }
 
-        let attachment_id = Uuid::new_v4();
-        let storage_name = format!("{attachment_id}-{file_name}");
-        let storage_path = state.cfg.upload_dir.join(&storage_name);
-        let mut file = fs::File::create(&storage_path).await?;
-        written_paths.push(storage_path.clone());
-        let mut size_bytes: u64 = 0;
-        // First bytes of the file, for the magic-number check below.
-        let mut head: Vec<u8> = Vec::with_capacity(16);
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?
-        {
-            size_bytes += chunk.len() as u64;
-            if size_bytes > remaining {
-                return Err(AppError::BadRequest(
-                    "workspace storage limit exceeded".into(),
-                ));
-            }
-            if head.len() < 16 {
-                head.extend_from_slice(&chunk[..chunk.len().min(16 - head.len())]);
-            }
-            file.write_all(&chunk).await?;
-        }
-        file.flush().await?;
-        drop(file);
-        if size_bytes == 0 {
-            let _ = fs::remove_file(&storage_path).await;
-            written_paths.pop();
-            continue;
-        }
-        // Inline-previewable types are later served with an image/PDF MIME
-        // and Content-Disposition: inline; require the content to actually be
-        // that format so no foreign payload gets rendered inline.
-        if !magic_matches(&file_name, &head) {
-            return Err(AppError::BadRequest(format!(
-                "file content of \"{file_name}\" does not match its extension"
-            )));
-        }
-        remaining -= size_bytes;
-
-        let kind = if mime_guess::from_path(&file_name)
+    for attachment in pending {
+        let kind = if mime_guess::from_path(&attachment.file_name)
             .first_or_octet_stream()
             .type_()
             == mime_guess::mime::IMAGE
@@ -124,17 +210,19 @@ pub(crate) async fn store_attachments(
         } else {
             AttachmentKind::File
         };
+        fs::rename(&attachment.temp_path, &attachment.storage_path).await?;
+        written_paths.push(attachment.storage_path.clone());
 
         sqlx::query(
             "INSERT INTO attachments (id, task_id, file_name, kind, size_bytes, storage_path, created_by) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
-        .bind(attachment_id)
+        .bind(attachment.attachment_id)
         .bind(task_id)
-        .bind(&file_name)
+        .bind(&attachment.file_name)
         .bind(attachment_kind_to_db(&kind))
-        .bind(size_bytes as i64)
-        .bind(storage_path.to_string_lossy().to_string())
+        .bind(attachment.size_bytes as i64)
+        .bind(attachment.storage_path.to_string_lossy().to_string())
         .bind(user_id)
         .execute(&mut *tx)
         .await?;

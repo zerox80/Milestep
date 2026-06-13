@@ -335,12 +335,7 @@ pub(crate) fn app_icon(icon: AppIcon) -> View {
     }
 }
 
-pub(crate) fn stat(
-    icon: AppIcon,
-    value: usize,
-    label: &'static str,
-    tone: &'static str,
-) -> View {
+pub(crate) fn stat(icon: AppIcon, value: usize, label: &'static str, tone: &'static str) -> View {
     view! {
         <article class=format!("stat-card {tone}")><span>{app_icon(icon)}</span><strong>{value}</strong><small>{label}</small></article>
     }.into_view()

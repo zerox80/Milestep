@@ -367,7 +367,8 @@ fn admin_metric(
             <strong>{value}</strong>
             <span>{detail}</span>
         </article>
-    }.into_view()
+    }
+    .into_view()
 }
 
 fn role_filter_options(lang: ReadSignal<Lang>) -> View {
@@ -387,9 +388,7 @@ fn role_filter_options(lang: ReadSignal<Lang>) -> View {
 }
 
 fn admin_text_matches(query: &str, name: &str, email: &str) -> bool {
-    query.is_empty()
-        || name.to_lowercase().contains(query)
-        || email.to_lowercase().contains(query)
+    query.is_empty() || name.to_lowercase().contains(query) || email.to_lowercase().contains(query)
 }
 
 fn role_filter_matches(filter: &str, role: Option<&Role>) -> bool {
@@ -409,5 +408,6 @@ fn admin_empty(lang: ReadSignal<Lang>, de: &'static str, en: &'static str) -> Vi
         <div class="empty-state compact">
             <strong>{move || if lang.get() == Lang::De { de } else { en }}</strong>
         </div>
-    }.into_view()
+    }
+    .into_view()
 }

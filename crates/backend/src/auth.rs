@@ -32,9 +32,10 @@ pub(crate) async fn register(
             Some(token) => {
                 let row: Option<(Uuid, Uuid, String)> = sqlx::query_as(
                     "SELECT id, workspace_id, role FROM workspace_invites \
-                 WHERE token_hash = $1 AND expires_at > now()",
+                 WHERE token_hash = $1 AND email = $2 AND expires_at > now()",
                 )
                 .bind(invite_token_hash(token))
+                .bind(&email)
                 .fetch_optional(&state.db)
                 .await?;
                 Some(row.ok_or_else(|| {
