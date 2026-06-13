@@ -127,7 +127,9 @@ KOWOBAU_PUBLIC_ORIGIN=https://planner.example.test
   backend; concurrent Argon2 hashing is bounded so auth floods cannot pin the CPU.
 - `KOWOBAU_TRUST_PROXY=true` (set automatically in Compose) makes the backend
   use `X-Real-IP` for rate limiting; never enable it without a trusted proxy
-  in front.
+  in front. Compose isolates nginx and the app on a dedicated `edge` network and
+  trusts only that subnet (`KOWOBAU_TRUSTED_PROXIES=172.30.0.0/24`), so postgres
+  or any future sibling container cannot spoof the header to dodge the limit.
 - Workspace invites are single-use tokens with a 14-day expiry. `POST
   /api/workspaces/{id}/invites` returns `invite_token` and `invite_path`
   (`/?invite=<token>`); share that link out-of-band. Registering with the token

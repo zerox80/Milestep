@@ -29,8 +29,16 @@ pub(crate) fn hold_realtime_while(active: impl Fn() -> bool + 'static) {
     });
 }
 
+/// Leading-edge debounce: events arriving within this window collapse into the
+/// one already-scheduled refetch, so a lone edit still lands quickly.
+const REFETCH_DEBOUNCE_MS: u32 = 400;
+/// Trailing throttle: under a sustained stream (many collaborators editing at
+/// once) keep at least this gap between full bootstrap reloads, so the server
+/// is not hit with one reload per event per connected client.
+const REFETCH_MIN_INTERVAL_MS: f64 = 1_500.0;
+
 /// Coalesces bursts of realtime events into a single background bootstrap
-/// refetch, deferred while any editor is open.
+/// refetch, deferred while any editor is open and rate-limited under churn.
 pub(crate) fn schedule_refetch(
     data: ReadSignal<Option<BootstrapDto>>,
     hold: RwSignal<i32>,
@@ -41,13 +49,21 @@ pub(crate) fn schedule_refetch(
         return;
     }
     spawn_local(async move {
-        gloo_timers::future::TimeoutFuture::new(400).await;
+        gloo_timers::future::TimeoutFuture::new(REFETCH_DEBOUNCE_MS).await;
         while hold.get_untracked() > 0 {
             gloo_timers::future::TimeoutFuture::new(1_000).await;
+        }
+        // Only wait out the remainder of the min interval since the last
+        // reload; an isolated edit (last reload long ago) is not delayed.
+        let elapsed = js_sys::Date::now() - LAST_REFETCH_AT.with(std::cell::Cell::get);
+        if elapsed < REFETCH_MIN_INTERVAL_MS {
+            let wait = (REFETCH_MIN_INTERVAL_MS - elapsed) as u32;
+            gloo_timers::future::TimeoutFuture::new(wait).await;
         }
         REFETCH_PENDING.with(|p| p.set(false));
         if data.get_untracked().is_some() {
             refresh_bootstrap(set_data, set_error).await;
+            LAST_REFETCH_AT.with(|t| t.set(js_sys::Date::now()));
         }
     });
 }

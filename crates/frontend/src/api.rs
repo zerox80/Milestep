@@ -144,6 +144,9 @@ thread_local! {
     );
     // Used by realtime::schedule_refetch to coalesce bursts of WS events.
     pub(crate) static REFETCH_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Wall-clock (ms, js_sys::Date::now) of the last completed bootstrap
+    // refetch, so schedule_refetch can throttle a sustained event stream.
+    pub(crate) static LAST_REFETCH_AT: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
 }
 
 pub(crate) fn client_id() -> String {

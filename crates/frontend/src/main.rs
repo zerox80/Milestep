@@ -184,6 +184,7 @@ mod task_detail;
 mod tests;
 mod ticket_detail;
 mod views_board;
+mod views_gantt;
 mod views_timeline;
 
 pub(crate) use actions::*;
@@ -199,4 +200,5 @@ pub(crate) use shell::*;
 pub(crate) use task_detail::*;
 pub(crate) use ticket_detail::*;
 pub(crate) use views_board::*;
+pub(crate) use views_gantt::*;
 pub(crate) use views_timeline::*;

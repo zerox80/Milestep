@@ -26,6 +26,7 @@ pub(crate) fn task_detail(
     let (mention_open, set_mention_open) = create_signal(false);
     let (mention_index, set_mention_index) = create_signal(0usize);
     let mention_members = store_value(boot.members.clone());
+    let can_edit = boot.current_role.can_edit();
     // Editing or a half-typed comment must not be wiped by a background refetch.
     hold_realtime_while(move || (can_edit && editing.get()) || !comment.get().trim().is_empty());
 
@@ -49,7 +50,6 @@ pub(crate) fn task_detail(
     let subtasks = task.subtasks.clone();
     let attachments = task.attachments.clone();
     let comments = task.comments.clone();
-    let can_edit = boot.current_role.can_edit();
     let task_id_base = task.id.clone();
     let task_id_for_upload = task.id.clone();
     let statuses_for_status_options = boot.statuses.clone();

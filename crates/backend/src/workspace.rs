@@ -64,19 +64,6 @@ pub(crate) async fn invite_member(
             "cannot invite a member as owner".into(),
         ));
     }
-    // Only an unexpired invite blocks a re-invite; an expired leftover row is
-    // refreshed via ON CONFLICT below instead of permanently blocking the email.
-    let already_invited: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM workspace_invites \
-         WHERE workspace_id = $1 AND email = $2 AND expires_at > now()",
-    )
-    .bind(workspace_id)
-    .bind(&email)
-    .fetch_optional(&state.db)
-    .await?;
-    if already_invited.is_some() {
-        return Err(AppError::Conflict("invite already exists".into()));
-    }
     let already_member: Option<(Uuid,)> = sqlx::query_as(
         "SELECT m.id FROM memberships m JOIN users u ON u.id = m.user_id \
          WHERE m.workspace_id = $1 AND u.email = $2",
@@ -124,25 +111,35 @@ pub(crate) async fn invite_member(
         }));
     }
     // Single-use random token; only its hash is stored, so a database leak
-    // does not expose redeemable invites.
+    // does not expose redeemable invites. Insert-or-refresh is one atomic
+    // statement: the ON CONFLICT path only fires for an *expired* row, so two
+    // concurrent invites for the same address can never both mint a live token.
+    // The loser conflicts with the still-valid row, the WHERE skips the update,
+    // and RETURNING yields nothing — which we surface as the same conflict a
+    // sequential duplicate invite would hit.
     let token = generate_invite_token();
-    sqlx::query(
+    let inserted: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO workspace_invites (id, workspace_id, email, role, invited_by, token_hash, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
          ON CONFLICT (workspace_id, email) DO UPDATE SET \
              role = EXCLUDED.role, invited_by = EXCLUDED.invited_by, \
              token_hash = EXCLUDED.token_hash, expires_at = EXCLUDED.expires_at, \
-             created_at = now()",
+             created_at = now() \
+         WHERE workspace_invites.expires_at <= now() \
+         RETURNING id",
     )
     .bind(Uuid::new_v4())
     .bind(workspace_id)
-    .bind(email)
+    .bind(&email)
     .bind(role_to_db(&payload.role))
     .bind(user_id)
     .bind(invite_token_hash(&token))
     .bind(Utc::now() + Duration::days(INVITE_TTL_DAYS))
-    .execute(&state.db)
+    .fetch_optional(&state.db)
     .await?;
+    if inserted.is_none() {
+        return Err(AppError::Conflict("invite already exists".into()));
+    }
     record_audit(
         &state.db,
         workspace_id,

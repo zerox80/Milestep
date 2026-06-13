@@ -17,17 +17,16 @@ pub(crate) fn admin_view(
         .filter(|m| matches!(m.role, Role::Owner | Role::Admin))
         .count();
     let registered_count = boot.registered_users.len();
-    let latest_activity = boot
-        .audit_events
-        .first()
-        .map(|a| {
+    let latest_activity = boot.audit_events.first().map_or_else(
+        || "-".into(),
+        |a| {
             if lang.get_untracked() == Lang::De {
                 a.created_label_de.clone()
             } else {
                 a.created_label_en.clone()
             }
-        })
-        .unwrap_or_else(|| "-".into());
+        },
+    );
 
     let (search, set_search) = create_signal(String::new());
     let (member_role_filter, set_member_role_filter) = create_signal("all".to_string());
@@ -39,10 +38,10 @@ pub(crate) fn admin_view(
 
     let members_for_list = boot.members.clone();
     let accounts_for_list = boot.registered_users.clone();
-    let audit_events = boot.audit_events.clone();
+    let audit_events = boot.audit_events;
     let workspace_id_for_invite = workspace_id.clone();
-    let workspace_id_for_accounts = workspace_id.clone();
-    let current_user_id_for_members = current_user_id.clone();
+    let workspace_id_for_accounts = workspace_id;
+    let current_user_id_for_members = current_user_id;
 
     let invite = move |_| {
         if !can_admin {
@@ -272,7 +271,7 @@ pub(crate) fn admin_view(
                                     view! {
                                         <div class="registered-row">
                                             <span class="avatar tiny">{user.initials.clone()}</span>
-                                            <span><strong>{user.name.clone()}</strong><small>{email}</small></span>
+                                            <span><strong>{user.name}</strong><small>{email}</small></span>
                                             <span>
                                                 {if let Some(member_id) = membership_id {
                                                     if can_change_account_owner {
@@ -392,15 +391,15 @@ fn admin_text_matches(query: &str, name: &str, email: &str) -> bool {
 }
 
 fn role_filter_matches(filter: &str, role: Option<&Role>) -> bool {
-    match (filter, role) {
-        ("all", _) => true,
-        ("none", None) => true,
-        ("owner", Some(Role::Owner)) => true,
-        ("admin", Some(Role::Admin)) => true,
-        ("member", Some(Role::Member)) => true,
-        ("viewer", Some(Role::Viewer)) => true,
-        _ => false,
-    }
+    matches!(
+        (filter, role),
+        ("all", _)
+            | ("none", None)
+            | ("owner", Some(Role::Owner))
+            | ("admin", Some(Role::Admin))
+            | ("member", Some(Role::Member))
+            | ("viewer", Some(Role::Viewer))
+    )
 }
 
 fn admin_empty(lang: ReadSignal<Lang>, de: &'static str, en: &'static str) -> View {
