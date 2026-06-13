@@ -61,7 +61,7 @@ impl Theme {
         }
     }
 
-    pub(crate) const ALL: [Theme; 2] = [Theme::Standard, Theme::Pishi];
+    pub(crate) const ALL: [Self; 2] = [Self::Standard, Self::Pishi];
 }
 
 const THEME_STORAGE_KEY: &str = "kowobau-theme";
