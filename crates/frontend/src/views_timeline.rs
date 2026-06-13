@@ -84,8 +84,8 @@ const CALENDAR_VISIBLE_ITEMS: usize = 4;
 
 #[derive(Debug, Clone)]
 enum CalendarItem {
-    Task(TaskDto),
-    Milestone(MilestoneDto),
+    Task(Box<TaskDto>),
+    Milestone(Box<MilestoneDto>),
 }
 
 fn calendar_items_for_day(
@@ -99,6 +99,7 @@ fn calendar_items_for_day(
             .iter()
             .filter(|task| task.due_date.as_deref() == Some(iso))
             .cloned()
+            .map(Box::new)
             .map(CalendarItem::Task),
     );
     items.extend(
@@ -106,9 +107,10 @@ fn calendar_items_for_day(
             .iter()
             .filter(|milestone| milestone.due_date == iso)
             .cloned()
+            .map(Box::new)
             .map(CalendarItem::Milestone),
     );
-    items.sort_by(|a, b| calendar_item_sort_key(a).cmp(&calendar_item_sort_key(b)));
+    items.sort_by_key(calendar_item_sort_key);
     items
 }
 
@@ -258,7 +260,12 @@ pub(crate) fn gantt_view(
                         let day = min_day + i as i64;
                         let (_, _, d) = civil_from_days(day);
                         let weekday = gantt_weekday_label(day, lang.get());
-                        let class_name = if is_weekend(day) { "weekend" } else { "" };
+                        let class_name = match (day == today, is_weekend(day)) {
+                            (true, true) => "today weekend",
+                            (true, false) => "today",
+                            (false, true) => "weekend",
+                            (false, false) => "",
+                        };
                         let date_title = gantt_day_label(day, lang.get());
                         view! { <span class=class_name title=date_title><b>{d}</b><small>{weekday}</small></span> }
                     }).collect_view()}

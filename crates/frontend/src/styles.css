@@ -238,10 +238,11 @@ p { margin: 0; }
 .gantt-scale span small { color: var(--ink-3); font: 700 9px var(--font-mono); text-transform: uppercase; }
 .gantt-scale span:first-child, .gantt-months > span { position: sticky; left: 22px; z-index: 7; display: flex; align-items: center; justify-content: start; border-left: 0; background: var(--surface); text-align: left; box-shadow: 16px 0 22px -22px rgba(28,26,22,.62); }
 .gantt-scale .weekend { background: var(--surface-2); color: var(--ink-2); }
+.gantt-scale .today { background: rgba(232,97,58,.08); box-shadow: inset 0 -2px 0 rgba(232,97,58,.42); }
 .gantt-milestones { min-height: 82px; border-bottom: 1px solid var(--line); color: var(--ink-3); font: 700 11px var(--font-mono); }
 .gantt-lane-label { position: sticky; left: 22px; z-index: 5; height: 100%; display: flex; align-items: center; min-width: 0; padding: 0 18px 0 8px; border-right: 1px solid var(--line); background: var(--surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 16px 0 22px -22px rgba(28,26,22,.62); }
 .gantt-track { position: relative; height: 100%; min-height: 52px; background-image: linear-gradient(to right, rgba(231,226,216,.84) 1px, transparent 1px), linear-gradient(to bottom, transparent calc(100% - 1px), var(--line) calc(100% - 1px)); background-size: calc(100% / var(--gantt-range)) 100%, 100% 100%; }
-.gantt-milestone { position: absolute; top: 18px; transform: translateX(-8px); display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; row-gap: 2px; width: max-content; max-width: 210px; color: var(--ink-2); }
+.gantt-milestone { position: absolute; top: 18px; z-index: 2; transform: translateX(-8px); display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; row-gap: 2px; width: max-content; max-width: 210px; color: var(--ink-2); }
 .gantt-milestone.edge { transform: translateX(calc(-100% + 8px)); grid-template-columns: minmax(0, 1fr) 14px; text-align: right; }
 .gantt-milestone i { grid-row: 1 / span 2; align-self: center; width: 14px; height: 14px; flex: none; transform: rotate(45deg); border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 4px var(--surface), 0 8px 18px -12px rgba(0,0,0,.55); }
 .gantt-milestone.edge i { grid-column: 2; }
@@ -261,13 +262,13 @@ p { margin: 0; }
 .gantt-key-meta { grid-column: 1 / -1; display: flex; gap: 7px; min-width: 0; overflow: hidden; }
 .gantt-key-meta em { min-width: 0; color: var(--ink-3); font: normal 700 10px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gantt-key small { grid-column: 2; grid-row: 1; min-width: 19px; height: 19px; display: inline-grid; place-items: center; border-radius: 999px; background: var(--accent-soft); color: var(--accent-press); font: 800 10px var(--font-mono); }
-.gantt-bar { position: absolute; top: 15px; height: 40px; display: flex; align-items: center; border-radius: 8px; color: white; font-style: normal; padding: 0 13px; overflow: hidden; box-shadow: 0 14px 26px -19px rgba(0,0,0,.68), inset 0 -14px 20px rgba(0,0,0,.12); }
+.gantt-bar { position: absolute; top: 15px; z-index: 2; height: 40px; display: flex; align-items: center; border-radius: 8px; color: white; font-style: normal; padding: 0 13px; overflow: hidden; box-shadow: 0 14px 26px -19px rgba(0,0,0,.68), inset 0 -14px 20px rgba(0,0,0,.12); }
 .gantt-bar b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 800 12px var(--font-body); }
 .gantt-bar small { display: none; }
 .gantt-bar.compact { justify-content: center; padding: 0 6px; }
 .gantt-bar.compact b { width: 0; height: 0; opacity: 0; }
 .gantt-bar.compact small { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 800 10px var(--font-mono); }
-.gantt-today { position: absolute; top: 0; bottom: 0; z-index: 7; width: 2px; transform: translateX(-1px); border-radius: 999px; background: var(--accent); box-shadow: 0 0 0 2px rgba(232,97,58,.14); pointer-events: none; }
+.gantt-today { position: absolute; top: 0; bottom: 0; z-index: 1; width: 1px; transform: translateX(-.5px); border-radius: 999px; background: var(--accent); opacity: .58; pointer-events: none; }
 .roadmap-grid, .team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
 .road-card, .member-card { background: var(--surface); border-radius: 14px; box-shadow: 0 0 0 1px var(--line); padding: 16px; }
 .road-card header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
