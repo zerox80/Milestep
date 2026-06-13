@@ -6,8 +6,12 @@ pub(crate) async fn list_tickets(
     Query(query): Query<WorkspaceQuery>,
 ) -> Result<Json<Vec<TicketDto>>, AppError> {
     let ctx = require_auth(&state, &headers).await?;
-    let project_id =
-        active_project_id(&state.db, uuid_from_str(&ctx.user.id)?, query.workspace_uuid()?).await?;
+    let project_id = active_project_id(
+        &state.db,
+        uuid_from_str(&ctx.user.id)?,
+        query.workspace_uuid()?,
+    )
+    .await?;
     Ok(Json(fetch_tickets(&state.db, project_id).await?))
 }
 
