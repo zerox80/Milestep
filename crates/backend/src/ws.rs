@@ -22,8 +22,19 @@ pub(crate) async fn read_all_notifications(
 ) -> Result<StatusCode, AppError> {
     let ctx = require_auth(&state, &headers).await?;
     let user_id = uuid_from_str(&ctx.user.id)?;
-    sqlx::query("UPDATE notifications SET unread = false WHERE user_id = $1")
+    let (workspace_id,): (Uuid,) = sqlx::query_as(
+        "SELECT workspace_id FROM memberships \
+         WHERE user_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::Forbidden)?;
+    sqlx::query(
+        "UPDATE notifications SET unread = false WHERE user_id = $1 AND workspace_id = $2",
+    )
         .bind(user_id)
+        .bind(workspace_id)
         .execute(&state.db)
         .await?;
     Ok(StatusCode::NO_CONTENT)

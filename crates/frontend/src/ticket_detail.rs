@@ -18,9 +18,24 @@ pub(crate) fn ticket_detail(
         create_signal(ticket.assignee_id.clone().unwrap_or_default());
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
-    // Editable ticket drawers hold realtime refetches so in-progress changes
-    // are not discarded. Viewers see a read-only drawer.
-    hold_realtime_while(move || can_edit);
+    let initial_title = ticket.title.clone();
+    let initial_description = ticket.description.clone();
+    let initial_requester_name = ticket.requester_name.clone();
+    let initial_status = ticket.status.clone();
+    let initial_priority = ticket.priority.clone();
+    let initial_assignee_id = ticket.assignee_id.clone().unwrap_or_default();
+    // Hold realtime only while there are unsaved local changes, so simply
+    // viewing an editable ticket does not block collaborator updates.
+    hold_realtime_while(move || {
+        can_edit
+            && (busy.get()
+                || title.get() != initial_title
+                || description.get() != initial_description
+                || requester_name.get() != initial_requester_name
+                || status.get() != initial_status
+                || priority.get() != initial_priority
+                || assignee_id.get() != initial_assignee_id)
+    });
 
     let ticket_id_for_save = ticket.id.clone();
     let save = move |_| {
