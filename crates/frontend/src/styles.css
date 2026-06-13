@@ -254,7 +254,7 @@ p { margin: 0; }
 .gantt-milestone.edge b, .gantt-milestone.edge small { grid-column: 1; }
 .gantt-milestone b { font: 800 12px var(--font-body); color: var(--ink); }
 .gantt-milestone small { font: 700 10px var(--font-mono); color: var(--ink-3); }
-.gantt-row { width: 100%; height: 70px; text-align: left; border-bottom: 1px solid var(--line); transition: background .15s ease; }
+.gantt-row { appearance: none; width: 100%; height: 70px; padding: 0; text-align: left; border-bottom: 1px solid var(--line); transition: background .15s ease; }
 .gantt-row:hover { background: #fdfbf6; }
 .gantt-row:hover .gantt-lane-label, .gantt-row:hover .gantt-key { background: var(--surface-2); }
 .gantt-key { position: sticky; left: 22px; z-index: 4; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: center; gap: 6px 10px; min-width: 0; height: 100%; padding: 0 18px 0 8px; border-right: 1px solid var(--line); background: var(--surface); color: var(--ink-3); box-shadow: 16px 0 22px -22px rgba(28,26,22,.62); }
@@ -271,7 +271,8 @@ p { margin: 0; }
 .gantt-bar.compact { justify-content: center; padding: 0 6px; }
 .gantt-bar.compact b { width: 0; height: 0; opacity: 0; }
 .gantt-bar.compact small { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 800 10px var(--font-mono); }
-.gantt-today { position: absolute; top: 0; bottom: 0; z-index: 1; width: calc(100% / var(--gantt-range)); border-left: 3px solid var(--accent); background: rgba(232,97,58,.07); box-shadow: 0 0 0 1px rgba(232,97,58,.12); opacity: .9; pointer-events: none; }
+.gantt-today { position: absolute; top: 0; bottom: 0; z-index: 3; width: calc(100% / var(--gantt-range)); background: rgba(232,97,58,.07); opacity: .9; pointer-events: none; }
+.gantt-today::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--accent); }
 .roadmap-grid, .team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
 .road-card, .member-card { background: var(--surface); border-radius: 14px; box-shadow: 0 0 0 1px var(--line); padding: 16px; }
 .road-card header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
