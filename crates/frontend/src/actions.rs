@@ -234,38 +234,30 @@ pub(crate) async fn refresh_bootstrap(
 }
 
 pub(crate) fn replace_task(set_data: WriteSignal<Option<BootstrapDto>>, task: TaskDto) {
-    set_data.update(|data| {
-        if let Some(data) = data {
-            if let Some(current) = data.tasks.iter_mut().find(|t| t.id == task.id) {
-                *current = task;
-            }
+    update_bootstrap(set_data, |data| {
+        if let Some(current) = data.tasks.iter_mut().find(|t| t.id == task.id) {
+            *current = task;
         }
     });
 }
 
 pub(crate) fn remove_task(set_data: WriteSignal<Option<BootstrapDto>>, task_id: &str) {
-    set_data.update(|data| {
-        if let Some(data) = data {
-            data.tasks.retain(|task| task.id != task_id);
-        }
+    update_bootstrap(set_data, |data| {
+        data.tasks.retain(|task| task.id != task_id);
     });
 }
 
 pub(crate) fn replace_ticket(set_data: WriteSignal<Option<BootstrapDto>>, ticket: TicketDto) {
-    set_data.update(|data| {
-        if let Some(data) = data {
-            if let Some(current) = data.tickets.iter_mut().find(|t| t.id == ticket.id) {
-                *current = ticket;
-            }
+    update_bootstrap(set_data, |data| {
+        if let Some(current) = data.tickets.iter_mut().find(|t| t.id == ticket.id) {
+            *current = ticket;
         }
     });
 }
 
 pub(crate) fn remove_ticket(set_data: WriteSignal<Option<BootstrapDto>>, ticket_id: &str) {
-    set_data.update(|data| {
-        if let Some(data) = data {
-            data.tickets.retain(|ticket| ticket.id != ticket_id);
-        }
+    update_bootstrap(set_data, |data| {
+        data.tickets.retain(|ticket| ticket.id != ticket_id);
     });
 }
 
@@ -299,10 +291,19 @@ pub(crate) fn delete_milestone(
 }
 
 pub(crate) fn remove_milestone(set_data: WriteSignal<Option<BootstrapDto>>, milestone_id: &str) {
+    update_bootstrap(set_data, |data| {
+        data.milestones
+            .retain(|milestone| milestone.id != milestone_id);
+    });
+}
+
+fn update_bootstrap(
+    set_data: WriteSignal<Option<BootstrapDto>>,
+    update: impl FnOnce(&mut BootstrapDto),
+) {
     set_data.update(|data| {
         if let Some(data) = data {
-            data.milestones
-                .retain(|milestone| milestone.id != milestone_id);
+            update(data);
         }
     });
 }

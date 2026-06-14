@@ -134,6 +134,18 @@ pub(crate) fn uuid_from_str(value: &str) -> Result<Uuid, AppError> {
     Uuid::parse_str(value).map_err(|_| AppError::BadRequest("invalid id".into()))
 }
 
+pub(crate) fn required_trimmed<'a>(
+    value: &'a str,
+    message: &'static str,
+) -> Result<&'a str, AppError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(AppError::BadRequest(message.into()))
+    } else {
+        Ok(value)
+    }
+}
+
 pub(crate) fn fixed_uuid(value: &str) -> Result<Uuid, AppError> {
     Uuid::parse_str(value).map_err(|e| AppError::BadRequest(e.to_string()))
 }

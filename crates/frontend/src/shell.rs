@@ -1,29 +1,48 @@
 use crate::*;
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn dashboard(
-    boot: BootstrapDto,
-    lang: ReadSignal<Lang>,
-    set_lang: WriteSignal<Lang>,
-    nav: ReadSignal<NavView>,
-    set_nav: WriteSignal<NavView>,
-    board_mode: ReadSignal<String>,
-    set_board_mode: WriteSignal<String>,
-    open_task: ReadSignal<Option<String>>,
-    set_open_task: WriteSignal<Option<String>>,
-    open_ticket: ReadSignal<Option<String>>,
-    set_open_ticket: WriteSignal<Option<String>>,
-    show_create: ReadSignal<bool>,
-    set_show_create: WriteSignal<bool>,
-    show_create_ticket: ReadSignal<bool>,
-    set_show_create_ticket: WriteSignal<bool>,
-    show_notifications: ReadSignal<bool>,
-    set_show_notifications: WriteSignal<bool>,
-    drag_task: ReadSignal<Option<String>>,
-    set_drag_task: WriteSignal<Option<String>>,
-    set_data: WriteSignal<Option<BootstrapDto>>,
-    set_error: WriteSignal<Option<String>>,
-) -> View {
+#[derive(Clone, Copy)]
+pub(crate) struct AppSignals {
+    pub(crate) lang: ReadSignal<Lang>,
+    pub(crate) set_lang: WriteSignal<Lang>,
+    pub(crate) nav: ReadSignal<NavView>,
+    pub(crate) set_nav: WriteSignal<NavView>,
+    pub(crate) board_mode: ReadSignal<String>,
+    pub(crate) set_board_mode: WriteSignal<String>,
+    pub(crate) open_task: ReadSignal<Option<String>>,
+    pub(crate) set_open_task: WriteSignal<Option<String>>,
+    pub(crate) open_ticket: ReadSignal<Option<String>>,
+    pub(crate) set_open_ticket: WriteSignal<Option<String>>,
+    pub(crate) show_create: ReadSignal<bool>,
+    pub(crate) set_show_create: WriteSignal<bool>,
+    pub(crate) show_create_ticket: ReadSignal<bool>,
+    pub(crate) set_show_create_ticket: WriteSignal<bool>,
+    pub(crate) show_notifications: ReadSignal<bool>,
+    pub(crate) set_show_notifications: WriteSignal<bool>,
+    pub(crate) drag_task: ReadSignal<Option<String>>,
+    pub(crate) set_drag_task: WriteSignal<Option<String>>,
+    pub(crate) set_data: WriteSignal<Option<BootstrapDto>>,
+    pub(crate) set_error: WriteSignal<Option<String>>,
+}
+
+pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
+    let lang = signals.lang;
+    let set_lang = signals.set_lang;
+    let nav = signals.nav;
+    let set_nav = signals.set_nav;
+    let board_mode = signals.board_mode;
+    let set_board_mode = signals.set_board_mode;
+    let open_task = signals.open_task;
+    let set_open_task = signals.set_open_task;
+    let open_ticket = signals.open_ticket;
+    let set_open_ticket = signals.set_open_ticket;
+    let show_create = signals.show_create;
+    let set_show_create = signals.set_show_create;
+    let show_create_ticket = signals.show_create_ticket;
+    let set_show_create_ticket = signals.set_show_create_ticket;
+    let show_notifications = signals.show_notifications;
+    let set_show_notifications = signals.set_show_notifications;
+    let set_data = signals.set_data;
+    let set_error = signals.set_error;
     let unread = boot.notifications.iter().filter(|n| n.unread).count();
     let can_edit = boot.current_role.can_edit();
     let title = header_title(&boot, nav.get(), lang.get());
@@ -150,21 +169,7 @@ pub(crate) fn dashboard(
                 </section>
 
                 <section class="content">
-                    {main_view(
-                        boot_for_main,
-                        lang,
-                        nav,
-                        set_nav,
-                        board_mode,
-                        set_open_task,
-                        drag_task,
-                        set_drag_task,
-                        set_show_create,
-                        set_show_create_ticket,
-                        set_open_ticket,
-                        set_data,
-                        set_error,
-                    )}
+                    {main_view(boot_for_main, signals)}
                 </section>
             </main>
 
@@ -207,22 +212,20 @@ pub(crate) fn nav_button(
     }.into_view()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn main_view(
-    boot: BootstrapDto,
-    lang: ReadSignal<Lang>,
-    nav: ReadSignal<NavView>,
-    set_nav: WriteSignal<NavView>,
-    board_mode: ReadSignal<String>,
-    set_open_task: WriteSignal<Option<String>>,
-    drag_task: ReadSignal<Option<String>>,
-    set_drag_task: WriteSignal<Option<String>>,
-    set_show_create: WriteSignal<bool>,
-    set_show_create_ticket: WriteSignal<bool>,
-    set_open_ticket: WriteSignal<Option<String>>,
-    set_data: WriteSignal<Option<BootstrapDto>>,
-    set_error: WriteSignal<Option<String>>,
-) -> View {
+pub(crate) fn main_view(boot: BootstrapDto, signals: &AppSignals) -> View {
+    let lang = signals.lang;
+    let nav = signals.nav;
+    let set_nav = signals.set_nav;
+    let board_mode = signals.board_mode;
+    let set_open_task = signals.set_open_task;
+    let drag_task = signals.drag_task;
+    let set_drag_task = signals.set_drag_task;
+    let set_show_create = signals.set_show_create;
+    let set_show_create_ticket = signals.set_show_create_ticket;
+    let set_open_ticket = signals.set_open_ticket;
+    let set_data = signals.set_data;
+    let set_error = signals.set_error;
+
     match nav.get() {
         NavView::Overview => overview_view(boot, lang, set_open_task, set_data, set_error),
         NavView::Board if board_mode.get() == "list" => list_view(boot, lang, set_open_task),

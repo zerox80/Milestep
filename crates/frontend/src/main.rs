@@ -158,26 +158,28 @@ pub(crate) fn AppRoot() -> impl IntoView {
             {move || match data.get() {
                 Some(boot) => dashboard(
                     boot,
-                    lang,
-                    set_lang,
-                    nav,
-                    set_nav,
-                    board_mode,
-                    set_board_mode,
-                    open_task,
-                    set_open_task,
-                    open_ticket,
-                    set_open_ticket,
-                    show_create,
-                    set_show_create,
-                    show_create_ticket,
-                    set_show_create_ticket,
-                    show_notifications,
-                    set_show_notifications,
-                    drag_task,
-                    set_drag_task,
-                    set_data,
-                    set_error,
+                    &AppSignals {
+                        lang,
+                        set_lang,
+                        nav,
+                        set_nav,
+                        board_mode,
+                        set_board_mode,
+                        open_task,
+                        set_open_task,
+                        open_ticket,
+                        set_open_ticket,
+                        show_create,
+                        set_show_create,
+                        show_create_ticket,
+                        set_show_create_ticket,
+                        show_notifications,
+                        set_show_notifications,
+                        drag_task,
+                        set_drag_task,
+                        set_data,
+                        set_error,
+                    },
                 ).into_view(),
                 None if loading.get() => boot_splash().into_view(),
                 None => auth_shell(lang, set_lang, reload, error, loading).into_view(),
@@ -198,6 +200,7 @@ mod realtime;
 mod settings;
 mod shell;
 mod task_detail;
+mod task_edit;
 #[cfg(test)]
 mod tests;
 mod theme;
@@ -218,6 +221,7 @@ pub(crate) use realtime::*;
 pub(crate) use settings::*;
 pub(crate) use shell::*;
 pub(crate) use task_detail::*;
+pub(crate) use task_edit::*;
 pub(crate) use theme::*;
 pub(crate) use ticket_detail::*;
 pub(crate) use views_board::*;

@@ -98,12 +98,7 @@ pub(crate) fn admin_view(
 
     view! {
         <div class="admin-space">
-            <section class="admin-summary">
-                {admin_metric("Mitglieder", "Members", member_count.to_string(), if lang.get() == Lang::De { "aktive Workspace-Zugaenge" } else { "active workspace access" }, "cool", lang)}
-                {admin_metric("Owner/Admins", "Owners/admins", admin_count.to_string(), if lang.get() == Lang::De { "koennen verwalten" } else { "can manage" }, "accent", lang)}
-                {admin_metric("Accounts", "Accounts", registered_count.to_string(), if lang.get() == Lang::De { "registriert" } else { "registered" }, "good", lang)}
-                {admin_metric("Letzte Aktivitaet", "Latest activity", latest_activity, if lang.get() == Lang::De { "Audit-Log" } else { "audit log" }, "warm", lang)}
-            </section>
+            {admin_summary(member_count, admin_count, registered_count, latest_activity, lang)}
 
             <section class="panel admin-toolbar">
                 <div>
@@ -365,6 +360,24 @@ fn admin_metric(
             <strong>{value}</strong>
             <span>{detail}</span>
         </article>
+    }
+    .into_view()
+}
+
+fn admin_summary(
+    member_count: usize,
+    admin_count: usize,
+    registered_count: usize,
+    latest_activity: String,
+    lang: ReadSignal<Lang>,
+) -> View {
+    view! {
+        <section class="admin-summary">
+            {admin_metric("Mitglieder", "Members", member_count.to_string(), if lang.get() == Lang::De { "aktive Workspace-Zugaenge" } else { "active workspace access" }, "cool", lang)}
+            {admin_metric("Owner/Admins", "Owners/admins", admin_count.to_string(), if lang.get() == Lang::De { "koennen verwalten" } else { "can manage" }, "accent", lang)}
+            {admin_metric("Accounts", "Accounts", registered_count.to_string(), if lang.get() == Lang::De { "registriert" } else { "registered" }, "good", lang)}
+            {admin_metric("Letzte Aktivitaet", "Latest activity", latest_activity, if lang.get() == Lang::De { "Audit-Log" } else { "audit log" }, "warm", lang)}
+        </section>
     }
     .into_view()
 }

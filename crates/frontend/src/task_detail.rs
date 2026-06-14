@@ -81,26 +81,16 @@ pub(crate) fn task_detail(
         }
         set_local_error.set(None);
         set_busy.set(true);
-        let assignee = assignee_edit.get_untracked();
-        let assignee_ids = if assignee.trim().is_empty() {
-            Vec::new()
-        } else {
-            vec![assignee]
-        };
-        let due_date = due_date_edit.get_untracked();
-        let payload = UpdateTaskRequest {
-            title: Some(title_edit.get_untracked()),
-            description: Some(description_edit.get_untracked()),
-            tag: None,
-            tag_color: None,
-            priority: Some(priority_edit.get_untracked()),
-            status_id: Some(status_edit.get_untracked()),
-            start_date: None,
-            due_date: Some((!due_date.trim().is_empty()).then_some(due_date)),
-            phase: Some(phase_edit.get_untracked()),
-            recurrence: Some(recurrence_edit.get_untracked()),
-            assignee_ids: Some(assignee_ids),
-        };
+        let payload = task_update_payload(TaskEditSnapshot {
+            title: title_edit.get_untracked(),
+            description: description_edit.get_untracked(),
+            priority: priority_edit.get_untracked(),
+            status_id: status_edit.get_untracked(),
+            due_date: due_date_edit.get_untracked(),
+            phase: phase_edit.get_untracked(),
+            recurrence: recurrence_edit.get_untracked(),
+            assignee_id: assignee_edit.get_untracked(),
+        });
         let task_id = task_id_for_save.clone();
         spawn_local(async move {
             match api_patch::<_, TaskDto>(&format!("/api/tasks/{task_id}"), &payload).await {
@@ -444,14 +434,28 @@ pub(crate) fn task_detail(
             <section class="drawer-edit-actions" style=move || if can_edit && editing.get() { String::new() } else { "display:none".to_string() }>
                 {move || local_error.get().map(|err| view! { <div class="modal-error inline">{err}</div> })}
                 <button class="btn ghost" on:click=move |_| {
-                    set_title_edit.set(reset_title.clone());
-                    set_description_edit.set(reset_description.clone());
-                    set_status_edit.set(reset_status.clone());
-                    set_priority_edit.set(reset_priority.clone());
-                    set_due_date_edit.set(reset_due.clone());
-                    set_phase_edit.set(reset_phase.clone());
-                    set_assignee_edit.set(reset_assignee.clone());
-                    set_recurrence_edit.set(reset_recurrence);
+                    reset_task_edit(
+                        TaskEditSetters {
+                            title: set_title_edit,
+                            description: set_description_edit,
+                            status: set_status_edit,
+                            priority: set_priority_edit,
+                            due_date: set_due_date_edit,
+                            phase: set_phase_edit,
+                            assignee: set_assignee_edit,
+                            recurrence: set_recurrence_edit,
+                        },
+                        TaskEditSnapshot {
+                            title: reset_title.clone(),
+                            description: reset_description.clone(),
+                            priority: reset_priority.clone(),
+                            status_id: reset_status.clone(),
+                            due_date: reset_due.clone(),
+                            phase: reset_phase.clone(),
+                            recurrence: reset_recurrence,
+                            assignee_id: reset_assignee.clone(),
+                        },
+                    );
                     set_local_error.set(None);
                     set_editing.set(false);
                 }>{move || if lang.get() == Lang::De { "Abbrechen" } else { "Cancel" }}</button>
