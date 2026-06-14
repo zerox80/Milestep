@@ -36,33 +36,13 @@ pub(crate) async fn create_task(
     let project_id = uuid_from_str(&payload.project_id)?;
     let workspace_id = assert_project_edit(&state.db, user_id, project_id).await?;
 
-    if payload.title.trim().is_empty() {
-        return Err(AppError::BadRequest("task title is required".into()));
-    }
+    let title = required_trimmed(&payload.title, "task title is required")?;
 
     let status_id = uuid_from_str(&payload.status_id)?;
     assert_status_in_project(&state.db, project_id, status_id).await?;
 
     let mut tx = state.db.begin().await?;
-    // Serializes key generation per project so concurrent creates cannot collide.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-        .bind(project_id.to_string())
-        .execute(&mut *tx)
-        .await?;
-    let (project_key,): (String,) = sqlx::query_as("SELECT key FROM projects WHERE id = $1")
-        .bind(project_id)
-        .fetch_one(&mut *tx)
-        .await?;
-    let next: (i32,) = sqlx::query_as(
-        "SELECT COALESCE(MAX(split_part(key, '-', 2)::INT), 100) + 1 \
-         FROM tasks WHERE project_id = $1 AND key LIKE $2 || '-%' \
-         AND split_part(key, '-', 2) ~ '^[0-9]+$'",
-    )
-    .bind(project_id)
-    .bind(&project_key)
-    .fetch_one(&mut *tx)
-    .await?;
-    let key = format!("{}-{}", project_key, next.0);
+    let key = next_task_key(&mut *tx, project_id).await?;
 
     let task_id = Uuid::new_v4();
     sqlx::query(
@@ -73,7 +53,7 @@ pub(crate) async fn create_task(
     .bind(task_id)
     .bind(project_id)
     .bind(&key)
-    .bind(payload.title.trim())
+    .bind(title)
     .bind(payload.description.trim())
     .bind(payload.tag.trim())
     .bind(payload.tag_color.trim())
@@ -129,11 +109,9 @@ pub(crate) async fn update_task(
 
     let mut tx = state.db.begin().await?;
     if let Some(title) = payload.title {
-        if title.trim().is_empty() {
-            return Err(AppError::BadRequest("task title is required".into()));
-        }
+        let title = required_trimmed(&title, "task title is required")?;
         sqlx::query("UPDATE tasks SET title = $1, updated_at = now() WHERE id = $2")
-            .bind(title.trim())
+            .bind(title)
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
@@ -325,4 +303,35 @@ pub(crate) async fn delete_task(
         }
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn required_trimmed<'a>(value: &'a str, message: &'static str) -> Result<&'a str, AppError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(AppError::BadRequest(message.into()))
+    } else {
+        Ok(value)
+    }
+}
+
+async fn next_task_key(conn: &mut PgConnection, project_id: Uuid) -> Result<String, AppError> {
+    // Serializes key generation per project so concurrent creates cannot collide.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(project_id.to_string())
+        .execute(&mut *conn)
+        .await?;
+    let (project_key,): (String,) = sqlx::query_as("SELECT key FROM projects WHERE id = $1")
+        .bind(project_id)
+        .fetch_one(&mut *conn)
+        .await?;
+    let next: (i32,) = sqlx::query_as(
+        "SELECT COALESCE(MAX(split_part(key, '-', 2)::INT), 100) + 1 \
+         FROM tasks WHERE project_id = $1 AND key LIKE $2 || '-%' \
+         AND split_part(key, '-', 2) ~ '^[0-9]+$'",
+    )
+    .bind(project_id)
+    .bind(&project_key)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(format!("{}-{}", project_key, next.0))
 }
