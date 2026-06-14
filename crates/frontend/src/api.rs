@@ -118,11 +118,7 @@ pub(crate) async fn api_empty(url: &str) -> Result<(), ApiError> {
         .send()
         .await
         .map_err(ApiError::network)?;
-    if response.ok() {
-        Ok(())
-    } else {
-        Err(error_from_body(&response, response.text().await.ok()))
-    }
+    decode_empty_response(response).await
 }
 
 pub(crate) async fn api_delete<T: DeserializeOwned>(url: &str) -> Result<T, ApiError> {
@@ -142,11 +138,7 @@ pub(crate) async fn api_delete_empty(url: &str) -> Result<(), ApiError> {
         .send()
         .await
         .map_err(ApiError::network)?;
-    if response.ok() {
-        Ok(())
-    } else {
-        Err(error_from_body(&response, response.text().await.ok()))
-    }
+    decode_empty_response(response).await
 }
 
 pub(crate) async fn decode_response<T: DeserializeOwned>(
@@ -154,6 +146,16 @@ pub(crate) async fn decode_response<T: DeserializeOwned>(
 ) -> Result<T, ApiError> {
     if response.ok() {
         response.json::<T>().await.map_err(ApiError::network)
+    } else {
+        Err(error_from_body(&response, response.text().await.ok()))
+    }
+}
+
+pub(crate) async fn decode_empty_response(
+    response: gloo_net::http::Response,
+) -> Result<(), ApiError> {
+    if response.ok() {
+        Ok(())
     } else {
         Err(error_from_body(&response, response.text().await.ok()))
     }

@@ -181,10 +181,8 @@ pub(crate) async fn logout(
     }
 
     let mut res = StatusCode::NO_CONTENT.into_response();
-    res.headers_mut().insert(
-        SET_COOKIE,
-        HeaderValue::from_str(&expired_cookie(&state.cfg)).expect("valid cookie"),
-    );
+    res.headers_mut()
+        .insert(SET_COOKIE, cookie_header_value(expired_cookie(&state.cfg))?);
     Ok(res)
 }
 
@@ -199,10 +197,8 @@ pub(crate) async fn logout_all(
         .execute(&state.db)
         .await?;
     let mut res = StatusCode::NO_CONTENT.into_response();
-    res.headers_mut().insert(
-        SET_COOKIE,
-        HeaderValue::from_str(&expired_cookie(&state.cfg)).expect("valid cookie"),
-    );
+    res.headers_mut()
+        .insert(SET_COOKIE, cookie_header_value(expired_cookie(&state.cfg))?);
     Ok(res)
 }
 

@@ -1,5 +1,39 @@
 use crate::*;
 
+struct DefaultStatusSpec {
+    name_de: &'static str,
+    name_en: &'static str,
+    color: &'static str,
+    is_done: bool,
+}
+
+const DEFAULT_STATUSES: [DefaultStatusSpec; 4] = [
+    DefaultStatusSpec {
+        name_de: "Geplant",
+        name_en: "Planned",
+        color: "#8c867b",
+        is_done: false,
+    },
+    DefaultStatusSpec {
+        name_de: "In Arbeit",
+        name_en: "In progress",
+        color: "#6b8aa6",
+        is_done: false,
+    },
+    DefaultStatusSpec {
+        name_de: "Review",
+        name_en: "Review",
+        color: "#c98a3a",
+        is_done: false,
+    },
+    DefaultStatusSpec {
+        name_de: "Fertig",
+        name_en: "Done",
+        color: "#5f8d6a",
+        is_done: true,
+    },
+];
+
 pub(crate) async fn seed_demo(db: &PgPool, upload_dir: &FsPath) -> Result<(), AppError> {
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
         .fetch_one(db)
@@ -82,54 +116,47 @@ pub(crate) async fn seed_demo(db: &PgPool, upload_dir: &FsPath) -> Result<(), Ap
         .execute(db)
         .await?;
 
-    let last_active = [
-        "now()",
-        "now() - interval '25 minutes'",
-        "now() - interval '1 hour'",
-        "now() - interval '3 hours'",
-        "now() - interval '8 minutes'",
-        "now() - interval '1 day'",
-        "now() - interval '6 days'",
+    let last_active_ages = [
+        None,
+        Some("25 minutes"),
+        Some("1 hour"),
+        Some("3 hours"),
+        Some("8 minutes"),
+        Some("1 day"),
+        Some("6 days"),
     ];
     for (idx, (user_id, _, _, role)) in people.into_iter().enumerate() {
-        let sql = format!(
+        sqlx::query(
             "INSERT INTO memberships (id, workspace_id, user_id, role, status, last_active_at) \
-             VALUES ($1, $2, $3, $4, 'active', {})",
-            last_active[idx]
-        );
-        sqlx::query(&sql)
-            .bind(Uuid::new_v4())
-            .bind(workspace_id)
-            .bind(user_id)
-            .bind(role_to_db(&role))
-            .execute(db)
-            .await?;
+             VALUES ($1, $2, $3, $4, 'active', COALESCE(now() - $5::interval, now()))",
+        )
+        .bind(Uuid::new_v4())
+        .bind(workspace_id)
+        .bind(user_id)
+        .bind(role_to_db(&role))
+        .bind(last_active_ages[idx])
+        .execute(db)
+        .await?;
     }
 
-    let statuses = [
-        ("Geplant", "Planned", "#8c867b", false),
-        ("In Arbeit", "In progress", "#6b8aa6", false),
-        ("Review", "Review", "#c98a3a", false),
-        ("Fertig", "Done", "#5f8d6a", true),
-    ];
-    for (idx, (de, en, color, is_done)) in statuses.into_iter().enumerate() {
+    for (idx, status) in DEFAULT_STATUSES.iter().enumerate() {
         sqlx::query(
             "INSERT INTO project_statuses (id, project_id, name_de, name_en, position, color, is_done) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(status_ids[idx])
         .bind(project_id)
-        .bind(de)
-        .bind(en)
+        .bind(status.name_de)
+        .bind(status.name_en)
         .bind(idx as i32)
-        .bind(color)
-        .bind(is_done)
+        .bind(status.color)
+        .bind(status.is_done)
         .execute(db)
         .await?;
     }
 
     let today = Utc::now().date_naive();
-    let tasks = seed_tasks(project_id, status_ids);
+    let tasks = seed_tasks(status_ids)?;
     let mut task_ids = HashMap::new();
     for task in &tasks {
         task_ids.insert(task.key, task.id);
@@ -327,12 +354,11 @@ pub(crate) async fn seed_demo(db: &PgPool, upload_dir: &FsPath) -> Result<(), Ap
         ),
     ];
     for (kind, actor, task_key, text, text_en, unread, age) in notifs {
-        let sql = format!(
+        sqlx::query(
             "INSERT INTO notifications \
              (id, workspace_id, user_id, kind, actor_id, task_id, text, text_en, unread, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() - interval '{age}')"
-        );
-        sqlx::query(&sql)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() - $10::interval)",
+        )
             .bind(Uuid::new_v4())
             .bind(workspace_id)
             .bind(alex)
@@ -342,6 +368,7 @@ pub(crate) async fn seed_demo(db: &PgPool, upload_dir: &FsPath) -> Result<(), Ap
             .bind(text)
             .bind(text_en)
             .bind(unread)
+            .bind(age)
             .execute(db)
             .await?;
     }
@@ -373,26 +400,18 @@ pub(crate) async fn insert_default_statuses(
     conn: &mut PgConnection,
     project_id: Uuid,
 ) -> Result<(), AppError> {
-    for (idx, (de, en, color, is_done)) in [
-        ("Geplant", "Planned", "#8c867b", false),
-        ("In Arbeit", "In progress", "#6b8aa6", false),
-        ("Review", "Review", "#c98a3a", false),
-        ("Fertig", "Done", "#5f8d6a", true),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (idx, status) in DEFAULT_STATUSES.iter().enumerate() {
         sqlx::query(
             "INSERT INTO project_statuses (id, project_id, name_de, name_en, position, color, is_done) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(Uuid::new_v4())
         .bind(project_id)
-        .bind(de)
-        .bind(en)
+        .bind(status.name_de)
+        .bind(status.name_en)
         .bind(idx as i32)
-        .bind(color)
-        .bind(is_done)
+        .bind(status.color)
+        .bind(status.is_done)
         .execute(&mut *conn)
         .await?;
     }

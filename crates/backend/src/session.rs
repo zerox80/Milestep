@@ -123,6 +123,11 @@ pub(crate) fn expired_cookie(cfg: &AppConfig) -> String {
     )
 }
 
+pub(crate) fn cookie_header_value(cookie: String) -> Result<HeaderValue, AppError> {
+    HeaderValue::from_str(&cookie)
+        .map_err(|_| AppError::Internal("generated cookie was not header-safe".into()))
+}
+
 pub(crate) fn json_with_cookie<T: Serialize>(
     state: &AppState,
     session_id: Uuid,
@@ -131,7 +136,7 @@ pub(crate) fn json_with_cookie<T: Serialize>(
     let mut res = Json(payload).into_response();
     res.headers_mut().insert(
         SET_COOKIE,
-        HeaderValue::from_str(&build_cookie(&state.cfg, session_id)?).expect("valid cookie"),
+        cookie_header_value(build_cookie(&state.cfg, session_id)?)?,
     );
     Ok(res)
 }

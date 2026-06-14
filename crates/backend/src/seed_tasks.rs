@@ -20,11 +20,10 @@ pub(crate) struct SeedTask {
     pub(crate) subtasks: &'static [(&'static str, &'static str, bool)],
 }
 
-pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTask> {
-    let _ = project_id;
-    vec![
+pub(crate) fn seed_tasks(status_ids: [Uuid; 4]) -> Result<Vec<SeedTask>, AppError> {
+    Ok(vec![
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000104").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000104")?,
             key: "KWB-104",
             title: "Mängelaufnahme koordinieren",
             title_en: "Coordinate defect walk-through",
@@ -48,7 +47,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             ],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000107").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000107")?,
             key: "KWB-107",
             title: "Terminplan aktualisieren",
             title_en: "Update construction schedule",
@@ -70,7 +69,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             ],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000101").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000101")?,
             key: "KWB-101",
             title: "Freigabe Brandschutzkonzept",
             title_en: "Approve fire-safety concept",
@@ -87,7 +86,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             subtasks: &[("Nachweise prüfen", "Review evidence", true), ("Rückfragen klären", "Resolve questions", true), ("Freigabe ablegen", "File approval", true)],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000102").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000102")?,
             key: "KWB-102",
             title: "Bemusterung Wohnungen",
             title_en: "Apartment sample selection",
@@ -104,7 +103,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             subtasks: &[("Bodenbelag festlegen", "Select flooring", true), ("Badserie freigeben", "Approve bathroom series", true), ("Türliste exportieren", "Export door list", true)],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000103").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000103")?,
             key: "KWB-103",
             title: "Mieterinformation vorbereiten",
             title_en: "Prepare tenant communication",
@@ -121,7 +120,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             subtasks: &[("Aushang entwerfen", "Draft notice", true), ("Terminfenster prüfen", "Check appointment windows", false), ("Ansprechpartner ergänzen", "Add contacts", false), ("Freigabe Verwaltung", "Administration approval", false), ("Verteilung planen", "Plan distribution", false)],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000105").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000105")?,
             key: "KWB-105",
             title: "Gewerkefreigabe dokumentieren",
             title_en: "Document trade approvals",
@@ -138,7 +137,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             subtasks: &[("Elektrofreigabe ablegen", "File electrical approval", false), ("Sanitärfreigabe ablegen", "File plumbing approval", false), ("Trockenbau-Nachweis ergänzen", "Add drywall evidence", false)],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000106").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000106")?,
             key: "KWB-106",
             title: "Abnahmeprotokoll prüfen",
             title_en: "Review handover protocol",
@@ -155,7 +154,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             subtasks: &[("Fotos abgleichen", "Compare photos", true), ("Unterschriften prüfen", "Check signatures", true), ("Restarbeiten markieren", "Mark remaining work", false)],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000108").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000108")?,
             key: "KWB-108",
             title: "Restarbeiten kontrollieren",
             title_en: "Check remaining work",
@@ -172,7 +171,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             subtasks: &[("Treppenhaus prüfen", "Check stairwell", true), ("Keller prüfen", "Check basement", true), ("Status im Protokoll setzen", "Update protocol status", false)],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000109").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000109")?,
             key: "KWB-109",
             title: "Baustellenbericht erstellen",
             title_en: "Create site report",
@@ -189,7 +188,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             subtasks: &[("Fotoliste ergänzen", "Add photo list", true), ("Risiken aktualisieren", "Update risks", true)],
         },
         SeedTask {
-            id: fixed_uuid("30000000-0000-4000-8000-000000000110").unwrap(),
+            id: fixed_uuid("30000000-0000-4000-8000-000000000110")?,
             key: "KWB-110",
             title: "Bauabschnitt B vorbereiten",
             title_en: "Prepare construction phase B",
@@ -205,7 +204,7 @@ pub(crate) fn seed_tasks(project_id: Uuid, status_ids: [Uuid; 4]) -> Vec<SeedTas
             assignees: &["AL", "JS"],
             subtasks: &[("Materialabruf prüfen", "Check material call-offs", false), ("Logistikfläche reservieren", "Reserve logistics area", false), ("Sicherheitsunterweisung planen", "Schedule safety briefing", false), ("Mieterinformation versenden", "Send tenant notice", false)],
         },
-    ]
+    ])
 }
 
 pub(crate) fn people_by_initial(initials: &str) -> Result<Uuid, AppError> {
