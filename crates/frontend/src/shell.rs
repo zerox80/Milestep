@@ -154,6 +154,7 @@ pub(crate) fn dashboard(
                         boot_for_main,
                         lang,
                         nav,
+                        set_nav,
                         board_mode,
                         set_open_task,
                         drag_task,
@@ -211,6 +212,7 @@ pub(crate) fn main_view(
     boot: BootstrapDto,
     lang: ReadSignal<Lang>,
     nav: ReadSignal<NavView>,
+    set_nav: WriteSignal<NavView>,
     board_mode: ReadSignal<String>,
     set_open_task: WriteSignal<Option<String>>,
     drag_task: ReadSignal<Option<String>>,
@@ -235,7 +237,7 @@ pub(crate) fn main_view(
             set_error,
         ),
         NavView::Tickets => ticket_view(boot, lang, set_show_create_ticket, set_open_ticket),
-        NavView::Calendar => calendar_view(boot, lang, set_open_task),
+        NavView::Calendar => calendar_view(boot, lang, set_nav, set_open_task),
         NavView::Gantt => gantt_view(boot, lang, set_open_task),
         NavView::Roadmap => roadmap_view(boot, lang, set_open_task),
         NavView::Team => team_view(boot, lang),
@@ -456,20 +458,8 @@ pub(crate) fn header_subtitle(boot: &BootstrapDto, nav: NavView, lang: Lang) -> 
                 .filter(|t| matches!(t.status, TicketStatus::Open | TicketStatus::InProgress))
                 .count()
         ),
-        (NavView::Calendar, Lang::De) => {
-            let (_, m, _) = now_date();
-            format!(
-                "Fälligkeiten und Meilensteine im {}",
-                MONTHS_DE_FULL[(m - 1) as usize]
-            )
-        }
-        (NavView::Calendar, Lang::En) => {
-            let (_, m, _) = now_date();
-            format!(
-                "Due dates and milestones in {}",
-                MONTHS_EN_FULL[(m - 1) as usize]
-            )
-        }
+        (NavView::Calendar, Lang::De) => "Fälligkeiten und Meilensteine".into(),
+        (NavView::Calendar, Lang::En) => "Due dates and milestones".into(),
         (NavView::Gantt, Lang::De) => "Zeitplan, Abhängigkeiten und Meilensteine".into(),
         (NavView::Gantt, Lang::En) => "Schedule, dependencies and milestones".into(),
         (NavView::Roadmap, Lang::De) => "Initiativen nach Zeithorizont".into(),

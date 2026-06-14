@@ -3,84 +3,228 @@ use crate::*;
 pub(crate) fn calendar_view(
     boot: BootstrapDto,
     lang: ReadSignal<Lang>,
+    set_nav: WriteSignal<NavView>,
     set_open_task: WriteSignal<Option<String>>,
 ) -> View {
     let all_tasks = boot.tasks;
     let all_milestones = boot.milestones;
     let statuses = boot.statuses;
-    let (year, month, today_day) = now_date();
-    let first_day_offset = calendar_month_offset(year, month);
-    let weekday_labels = calendar_weekday_labels(lang.get());
+    let (today_year, today_month, today_day) = now_date();
+    let today = today_iso();
+    // Displayed month (defaults to the current one). Local to the calendar so
+    // month navigation does not thread a signal through the whole dashboard.
+    let (cursor, set_cursor) = create_signal((today_year, today_month));
+    // Day (as a civil day-number) whose cell is expanded to show all items.
+    let (expanded, set_expanded) = create_signal::<Option<i64>>(None);
     view! {
         <div class="calendar-panel">
+            <div class="calendar-head">
+                <button
+                    class="cal-nav"
+                    title=move || if lang.get() == Lang::De { "Voriger Monat" } else { "Previous month" }
+                    aria-label=move || if lang.get() == Lang::De { "Voriger Monat" } else { "Previous month" }
+                    on:click=move |_| {
+                        set_expanded.set(None);
+                        set_cursor.update(|c| *c = prev_month(c.0, c.1));
+                    }
+                >"\u{2039}"</button>
+                <strong class="cal-month">
+                    {move || {
+                        let (y, m) = cursor.get();
+                        format!("{} {y}", month_full(m, lang.get()))
+                    }}
+                </strong>
+                <button
+                    class="cal-nav"
+                    title=move || if lang.get() == Lang::De { "Nächster Monat" } else { "Next month" }
+                    aria-label=move || if lang.get() == Lang::De { "Nächster Monat" } else { "Next month" }
+                    on:click=move |_| {
+                        set_expanded.set(None);
+                        set_cursor.update(|c| *c = next_month(c.0, c.1));
+                    }
+                >"\u{203A}"</button>
+                <button
+                    class="cal-today"
+                    disabled=move || cursor.get() == (today_year, today_month)
+                    on:click=move |_| {
+                        set_expanded.set(None);
+                        set_cursor.set((today_year, today_month));
+                    }
+                >{move || if lang.get() == Lang::De { "Heute" } else { "Today" }}</button>
+            </div>
             <div class="calendar-weekdays">
-                {weekday_labels.into_iter().map(|label| view! { <span>{label}</span> }).collect_view()}
+                {move || {
+                    let (y, m) = cursor.get();
+                    let today_col = if y == today_year && m == today_month {
+                        Some(calendar_weekday_index(days_from_civil(y, m, today_day)))
+                    } else {
+                        None
+                    };
+                    calendar_weekday_labels(lang.get())
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, label)| view! { <span class:today=move || today_col == Some(i)>{label}</span> })
+                        .collect_view()
+                }}
             </div>
-            <div class="calendar-grid">
-                {(0..first_day_offset).map(|_| view! { <span class="day-cell calendar-empty" aria-hidden="true"></span> }).collect_view()}
-            {(1..=days_in_month(year, month)).map(|day| {
-                let iso = format!("{year:04}-{month:02}-{day:02}");
-                let day_number = days_from_civil(year, month, day);
-                let items = calendar_items_for_day(&iso, &all_tasks, &all_milestones);
-                let hidden_count = items.len().saturating_sub(CALENDAR_VISIBLE_ITEMS);
-                view! {
-                    <div class="day-cell" class:today=move || day == today_day class:weekend=move || calendar_is_weekend(day_number)>
-                        <header class="day-cell-head">
-                            <strong>{day}</strong>
-                            {if day == today_day {
-                                view! { <small>{move || if lang.get() == Lang::De { "Heute" } else { "Today" }}</small> }.into_view()
-                            } else {
-                                ().into_view()
-                            }}
-                        </header>
-                        <div class="calendar-items">
-                            {items.into_iter().take(CALENDAR_VISIBLE_ITEMS).map(|item| {
-                                match item {
-                                    CalendarItem::Task(task) => {
-                                        let task_id = task.id.clone();
-                                        let label = task_title(&task, lang.get());
-                                        let color = status_color(&statuses, &task.status_id);
-                                        let class_name = if task.status_is_done { "cal-chip done" } else { "cal-chip" };
-                                        view! {
-                                            <button class=class_name style=format!("--cal-color:{color}") title=label.clone() on:click=move |_| set_open_task.set(Some(task_id.clone()))>
-                                                <span>{label}</span>
-                                            </button>
-                                        }.into_view()
-                                    }
-                                    CalendarItem::Milestone(milestone) => {
-                                        let label = title_for(milestone.title, milestone.title_en, lang.get());
-                                        let class_name = if milestone.done { "cal-chip milestone done" } else { "cal-chip milestone" };
-                                        view! {
-                                            <span class=class_name title=label.clone()>
-                                                <b>"\u{25C7}"</b>
-                                                <span>{label}</span>
-                                            </span>
-                                        }.into_view()
-                                    }
-                                }
-                            }).collect_view()}
-                            {if hidden_count > 0 {
-                                view! {
-                                    <span class="cal-more">
-                                        "+"
-                                        {hidden_count}
-                                        " "
-                                        {move || if lang.get() == Lang::De { "weitere" } else { "more" }}
-                                    </span>
-                                }.into_view()
-                            } else {
-                                ().into_view()
-                            }}
+            {move || {
+                let (year, month) = cursor.get();
+                let exp = expanded.get();
+                let lang_now = lang.get();
+                let prefix = format!("{year:04}-{month:02}-");
+                let month_has_items = all_tasks
+                    .iter()
+                    .filter_map(|t| t.due_date.as_deref())
+                    .any(|d| d.starts_with(&prefix))
+                    || all_milestones.iter().any(|m| m.due_date.starts_with(&prefix));
+                let note = if month_has_items {
+                    ().into_view()
+                } else {
+                    view! {
+                        <div class="empty-state compact">
+                            <span>
+                                {if lang_now == Lang::De { "Keine Termine in diesem Monat." } else { "No events this month." }}
+                            </span>
                         </div>
-                    </div>
+                    }.into_view()
+                };
+                let mut cells: Vec<View> = Vec::new();
+                for _ in 0..calendar_month_offset(year, month) {
+                    cells.push(view! { <span class="day-cell calendar-empty" aria-hidden="true"></span> }.into_view());
                 }
-            }).collect_view()}
-            </div>
+                for day in 1..=days_in_month(year, month) {
+                    let iso = format!("{year:04}-{month:02}-{day:02}");
+                    let day_number = days_from_civil(year, month, day);
+                    let items = calendar_items_for_day(&iso, &all_tasks, &all_milestones);
+                    let total = items.len();
+                    let is_empty = items.is_empty();
+                    let is_today = day == today_day && year == today_year && month == today_month;
+                    let is_expanded = exp == Some(day_number);
+                    let visible = if is_expanded { total } else { CALENDAR_VISIBLE_ITEMS };
+                    let hidden_count = total.saturating_sub(CALENDAR_VISIBLE_ITEMS);
+                    let chips = items
+                        .into_iter()
+                        .take(visible)
+                        .map(|item| match item {
+                            CalendarItem::Task(task) => {
+                                let task_id = task.id.clone();
+                                let label = task_title(&task, lang_now);
+                                let overdue = !task.status_is_done && iso.as_str() < today.as_str();
+                                let color = if overdue {
+                                    "var(--bad)".to_string()
+                                } else {
+                                    status_color(&statuses, &task.status_id)
+                                };
+                                let mut cls = String::from("cal-chip");
+                                if task.status_is_done {
+                                    cls.push_str(" done");
+                                }
+                                if overdue {
+                                    cls.push_str(" overdue");
+                                }
+                                view! {
+                                    <button class=cls style=format!("--cal-color:{color}") title=label.clone() on:click=move |_| set_open_task.set(Some(task_id.clone()))>
+                                        <span>{label}</span>
+                                    </button>
+                                }.into_view()
+                            }
+                            CalendarItem::Milestone(milestone) => {
+                                let label = title_for(milestone.title, milestone.title_en, lang_now);
+                                let mut cls = String::from("cal-chip milestone");
+                                if milestone.done {
+                                    cls.push_str(" done");
+                                }
+                                let aria = if lang_now == Lang::De {
+                                    format!("Meilenstein {label}, im Gantt öffnen")
+                                } else {
+                                    format!("Milestone {label}, open in Gantt")
+                                };
+                                view! {
+                                    <button class=cls title=label.clone() aria-label=aria on:click=move |_| set_nav.set(NavView::Gantt)>
+                                        <b>"\u{25C7}"</b>
+                                        <span>{label}</span>
+                                    </button>
+                                }.into_view()
+                            }
+                        })
+                        .collect_view();
+                    let overflow = if total <= CALENDAR_VISIBLE_ITEMS {
+                        ().into_view()
+                    } else if is_expanded {
+                        view! {
+                            <button class="cal-more" on:click=move |_| set_expanded.set(None)>
+                                {if lang_now == Lang::De { "weniger" } else { "less" }}
+                            </button>
+                        }.into_view()
+                    } else {
+                        view! {
+                            <button class="cal-more" on:click=move |_| set_expanded.set(Some(day_number))>
+                                "+" {hidden_count} " " {if lang_now == Lang::De { "weitere" } else { "more" }}
+                            </button>
+                        }.into_view()
+                    };
+                    let mut cls = String::from("day-cell");
+                    if is_today {
+                        cls.push_str(" today");
+                    }
+                    if calendar_is_weekend(day_number) {
+                        cls.push_str(" weekend");
+                    }
+                    if is_empty {
+                        cls.push_str(" is-empty");
+                    }
+                    let head_today = if is_today {
+                        view! { <small>{if lang_now == Lang::De { "Heute" } else { "Today" }}</small> }.into_view()
+                    } else {
+                        ().into_view()
+                    };
+                    cells.push(view! {
+                        <div class=cls>
+                            <header class="day-cell-head">
+                                <strong>{day}</strong>
+                                {head_today}
+                            </header>
+                            <div class="calendar-items">
+                                {chips}
+                                {overflow}
+                            </div>
+                        </div>
+                    }.into_view());
+                }
+                view! { {note} <div class="calendar-grid">{cells}</div> }.into_view()
+            }}
         </div>
     }.into_view()
 }
 
 const CALENDAR_VISIBLE_ITEMS: usize = 4;
+
+/// Previous calendar month, wrapping the year at January.
+pub(crate) fn prev_month(year: i32, month: u32) -> (i32, u32) {
+    if month == 1 {
+        (year - 1, 12)
+    } else {
+        (year, month - 1)
+    }
+}
+
+/// Next calendar month, wrapping the year at December.
+pub(crate) fn next_month(year: i32, month: u32) -> (i32, u32) {
+    if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    }
+}
+
+fn month_full(month: u32, lang: Lang) -> &'static str {
+    let i = (month - 1) as usize;
+    if lang == Lang::De {
+        MONTHS_DE_FULL[i]
+    } else {
+        MONTHS_EN_FULL[i]
+    }
+}
 
 #[derive(Debug, Clone)]
 enum CalendarItem {

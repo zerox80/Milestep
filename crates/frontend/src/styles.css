@@ -32,6 +32,7 @@
   --cool: #6b8aa6;
   --good: #5f8d6a;
   --warm: #c98a3a;
+  --bad: #c0392b;
   --radius: 10px;
   --topbar-bg: rgba(247,244,238,.82);
   --font-display: "Space Grotesk", system-ui, sans-serif;
@@ -237,9 +238,17 @@ p { margin: 0; }
 .empty-state.compact span { color: var(--ink-3); font-size: 14px; }
 
 .calendar-panel { background: var(--surface); border-radius: 14px; box-shadow: 0 0 0 1px var(--line); padding: 14px; overflow-x: auto; }
+.calendar-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.calendar-head .cal-nav { flex: none; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); font: 800 18px var(--font-mono); }
+.calendar-head .cal-nav:hover { background: var(--accent-soft); color: var(--accent-press); }
+.calendar-head .cal-month { flex: 1; min-width: 150px; text-align: center; font: 800 16px var(--font-display); color: var(--ink); }
+.calendar-head .cal-today { flex: none; border-radius: 8px; padding: 8px 14px; background: var(--accent-soft); color: var(--accent-press); font: 800 12px var(--font-mono); }
+.calendar-head .cal-today:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 26%, white); }
+.calendar-head .cal-today:disabled { opacity: .45; cursor: default; }
 .calendar-weekdays, .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(118px, 1fr)); gap: 8px; min-width: 826px; }
 .calendar-weekdays { margin-bottom: 8px; }
 .calendar-weekdays span { min-width: 0; padding: 0 10px; color: var(--ink-3); font: 800 11px var(--font-mono); text-transform: uppercase; }
+.calendar-weekdays span.today { color: var(--accent); }
 .day-cell { min-height: 138px; background: #fffdf9; border-radius: 8px; box-shadow: inset 0 0 0 1px var(--line); padding: 10px; display: grid; grid-template-rows: auto 1fr; gap: 8px; align-content: start; }
 .day-cell.weekend { background: var(--surface-2); }
 .day-cell.calendar-empty { min-height: 138px; background: transparent; box-shadow: inset 0 0 0 1px rgba(231,226,216,.58); }
@@ -253,9 +262,11 @@ p { margin: 0; }
 .cal-chip:hover { background: color-mix(in srgb, var(--cal-color) 20%, white); }
 .cal-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cal-chip.done { opacity: .55; text-decoration: line-through; }
+.cal-chip.overdue { color: var(--bad); }
 .cal-chip.milestone { --cal-color: var(--good); background: #edf5ed; color: #3f714e; box-shadow: inset 3px 0 0 var(--good); }
 .cal-chip.milestone b { flex: none; font: 800 10px var(--font-mono); color: var(--good); }
-.cal-more { min-height: 24px; display: inline-flex; align-items: center; color: var(--ink-3); font: 800 11px var(--font-mono); }
+.cal-more { min-height: 24px; display: inline-flex; align-items: center; padding: 0 5px; border-radius: 6px; color: var(--ink-3); font: 800 11px var(--font-mono); }
+.cal-more:hover { background: var(--surface-2); color: var(--ink-2); }
 .gantt-panel { overflow-x: auto; min-height: 220px; padding: 0; scrollbar-gutter: stable; }
 .gantt-toolbar { position: sticky; left: 0; z-index: 8; display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: min(100%, 820px); padding: 18px 22px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, var(--surface), #fffdf8); }
 .gantt-toolbar strong, .gantt-toolbar span { display: block; }
@@ -465,4 +476,14 @@ p { margin: 0; }
   .calendar-panel { padding: 10px; }
   .calendar-weekdays, .calendar-grid { grid-template-columns: repeat(7, minmax(112px, 1fr)); min-width: 784px; }
   .modal-meta, .ticket-meta, .detail-meta { grid-template-columns: 1fr; }
+}
+
+/* Phones: drop the 7-column grid for a single-column agenda of days that
+   actually have entries, so there is no horizontal scrolling. */
+@media (max-width: 640px) {
+  .calendar-panel { overflow-x: visible; }
+  .calendar-weekdays { display: none; }
+  .calendar-grid { display: block; min-width: 0; }
+  .day-cell.calendar-empty, .day-cell.is-empty { display: none; }
+  .day-cell { min-height: auto; margin-bottom: 8px; }
 }

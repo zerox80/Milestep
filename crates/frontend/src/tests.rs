@@ -33,6 +33,14 @@ fn calendar_months_align_to_monday_first_grid() {
 }
 
 #[test]
+fn calendar_month_navigation_wraps_at_year_boundaries() {
+    assert_eq!(prev_month(2026, 6), (2026, 5));
+    assert_eq!(next_month(2026, 6), (2026, 7));
+    assert_eq!(prev_month(2026, 1), (2025, 12));
+    assert_eq!(next_month(2026, 12), (2027, 1));
+}
+
+#[test]
 fn calendar_weekends_are_saturday_and_sunday() {
     assert!(!calendar_is_weekend(days_from_civil(2026, 6, 5)));
     assert!(calendar_is_weekend(days_from_civil(2026, 6, 6)));
