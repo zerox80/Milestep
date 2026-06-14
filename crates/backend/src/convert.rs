@@ -1,133 +1,65 @@
 use crate::*;
 
-pub(crate) const fn role_to_db(role: &Role) -> &'static str {
-    match role {
-        Role::Owner => "owner",
-        Role::Admin => "admin",
-        Role::Member => "member",
-        Role::Viewer => "viewer",
-    }
+// String <-> enum mapping lives once on the enums in `kowobau_shared`
+// (`as_db` / `from_db`). These thin wrappers keep the backend's strict policy:
+// an unrecognized value is a `BadRequest` rather than a silent fallback.
+
+pub(crate) fn role_to_db(role: &Role) -> &'static str {
+    role.as_db()
 }
 
 pub(crate) fn role_from_db(value: &str) -> Result<Role, AppError> {
-    match value {
-        "owner" => Ok(Role::Owner),
-        "admin" => Ok(Role::Admin),
-        "member" => Ok(Role::Member),
-        "viewer" => Ok(Role::Viewer),
-        _ => Err(AppError::BadRequest(format!("unknown role {value}"))),
-    }
+    Role::from_db(value).ok_or_else(|| AppError::BadRequest(format!("unknown role {value}")))
 }
 
 pub(crate) fn member_status_from_db(value: &str) -> Result<MemberStatus, AppError> {
-    match value {
-        "active" => Ok(MemberStatus::Active),
-        "invited" => Ok(MemberStatus::Invited),
-        _ => Err(AppError::BadRequest(format!(
-            "unknown member status {value}"
-        ))),
-    }
+    MemberStatus::from_db(value)
+        .ok_or_else(|| AppError::BadRequest(format!("unknown member status {value}")))
 }
 
-pub(crate) const fn priority_to_db(priority: &Priority) -> &'static str {
-    match priority {
-        Priority::Urgent => "urgent",
-        Priority::High => "high",
-        Priority::Medium => "medium",
-        Priority::Low => "low",
-    }
+pub(crate) fn priority_to_db(priority: &Priority) -> &'static str {
+    priority.as_db()
 }
 
 pub(crate) fn priority_from_db(value: &str) -> Result<Priority, AppError> {
-    match value {
-        "urgent" => Ok(Priority::Urgent),
-        "high" => Ok(Priority::High),
-        "medium" => Ok(Priority::Medium),
-        "low" => Ok(Priority::Low),
-        _ => Err(AppError::BadRequest(format!("unknown priority {value}"))),
-    }
+    Priority::from_db(value)
+        .ok_or_else(|| AppError::BadRequest(format!("unknown priority {value}")))
 }
 
-pub(crate) const fn ticket_status_to_db(status: &TicketStatus) -> &'static str {
-    match status {
-        TicketStatus::Open => "open",
-        TicketStatus::InProgress => "in_progress",
-        TicketStatus::Resolved => "resolved",
-        TicketStatus::Closed => "closed",
-    }
+pub(crate) fn ticket_status_to_db(status: &TicketStatus) -> &'static str {
+    status.as_db()
 }
 
 pub(crate) fn ticket_status_from_db(value: &str) -> Result<TicketStatus, AppError> {
-    match value {
-        "open" => Ok(TicketStatus::Open),
-        "in_progress" => Ok(TicketStatus::InProgress),
-        "resolved" => Ok(TicketStatus::Resolved),
-        "closed" => Ok(TicketStatus::Closed),
-        _ => Err(AppError::BadRequest(format!(
-            "unknown ticket status {value}"
-        ))),
-    }
+    TicketStatus::from_db(value)
+        .ok_or_else(|| AppError::BadRequest(format!("unknown ticket status {value}")))
 }
 
-pub(crate) const fn recurrence_to_db(recurrence: Recurrence) -> &'static str {
-    match recurrence {
-        Recurrence::Daily => "daily",
-        Recurrence::Weekly => "weekly",
-        Recurrence::Biweekly => "biweekly",
-        Recurrence::Monthly => "monthly",
-    }
+pub(crate) fn recurrence_to_db(recurrence: Recurrence) -> &'static str {
+    recurrence.as_db()
 }
 
 pub(crate) fn recurrence_from_db(value: &str) -> Result<Recurrence, AppError> {
-    match value {
-        "daily" => Ok(Recurrence::Daily),
-        "weekly" => Ok(Recurrence::Weekly),
-        "biweekly" => Ok(Recurrence::Biweekly),
-        "monthly" => Ok(Recurrence::Monthly),
-        _ => Err(AppError::BadRequest(format!("unknown recurrence {value}"))),
-    }
+    Recurrence::from_db(value)
+        .ok_or_else(|| AppError::BadRequest(format!("unknown recurrence {value}")))
 }
 
-pub(crate) const fn notification_kind_to_db(kind: &NotificationKind) -> &'static str {
-    match kind {
-        NotificationKind::Assigned => "assigned",
-        NotificationKind::Mention => "mention",
-        NotificationKind::Due => "due",
-        NotificationKind::Comment => "comment",
-        NotificationKind::Done => "done",
-        NotificationKind::Milestone => "milestone",
-    }
+pub(crate) fn notification_kind_to_db(kind: &NotificationKind) -> &'static str {
+    kind.as_db()
 }
 
 pub(crate) fn notification_kind_from_db(value: &str) -> Result<NotificationKind, AppError> {
-    match value {
-        "assigned" => Ok(NotificationKind::Assigned),
-        "mention" => Ok(NotificationKind::Mention),
-        "due" => Ok(NotificationKind::Due),
-        "comment" => Ok(NotificationKind::Comment),
-        "done" => Ok(NotificationKind::Done),
-        "milestone" => Ok(NotificationKind::Milestone),
-        _ => Err(AppError::BadRequest(format!(
-            "unknown notification kind {value}"
-        ))),
-    }
+    NotificationKind::from_db(value)
+        .ok_or_else(|| AppError::BadRequest(format!("unknown notification kind {value}")))
 }
 
-pub(crate) const fn attachment_kind_to_db(kind: &AttachmentKind) -> &'static str {
-    match kind {
-        AttachmentKind::File => "file",
-        AttachmentKind::Image => "image",
-    }
+pub(crate) fn attachment_kind_to_db(kind: &AttachmentKind) -> &'static str {
+    kind.as_db()
 }
 
 pub(crate) fn attachment_kind_from_db(value: &str) -> Result<AttachmentKind, AppError> {
-    match value {
-        "file" => Ok(AttachmentKind::File),
-        "image" => Ok(AttachmentKind::Image),
-        _ => Err(AppError::BadRequest(format!(
-            "unknown attachment kind {value}"
-        ))),
-    }
+    AttachmentKind::from_db(value)
+        .ok_or_else(|| AppError::BadRequest(format!("unknown attachment kind {value}")))
 }
 
 pub(crate) fn uuid_from_str(value: &str) -> Result<Uuid, AppError> {

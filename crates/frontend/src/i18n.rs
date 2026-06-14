@@ -16,6 +16,26 @@ pub(crate) fn title_for(de: String, en: Option<String>, lang: Lang) -> String {
     }
 }
 
+/// Guards a required text field. When `value` is blank, sets the localized
+/// message on `set_local_error` and returns `false`; otherwise clears the error
+/// and returns `true`. Lets a submit handler early-return with `if !require...`.
+pub(crate) fn require_nonempty(
+    value: &str,
+    lang: Lang,
+    msg_de: &'static str,
+    msg_en: &'static str,
+    set_local_error: WriteSignal<Option<String>>,
+) -> bool {
+    if value.trim().is_empty() {
+        set_local_error.set(Some(
+            if lang == Lang::De { msg_de } else { msg_en }.to_string(),
+        ));
+        return false;
+    }
+    set_local_error.set(None);
+    true
+}
+
 pub(crate) fn status_name(status: &StatusDto, lang: Lang) -> &'_ str {
     if lang == Lang::De {
         &status.name_de
@@ -53,33 +73,19 @@ pub(crate) fn priority_class(priority: &Priority) -> &'static str {
     }
 }
 
+// Parsing `<select>` values: the option strings are the enums' canonical
+// `as_db` form, so these reuse `kowobau_shared::*::from_db`. Form selects only
+// ever hold valid values, so an unrecognized one falls back to a sane default.
 pub(crate) fn priority_from_value(value: &str) -> Priority {
-    match value {
-        "urgent" => Priority::Urgent,
-        "high" => Priority::High,
-        "low" => Priority::Low,
-        _ => Priority::Medium,
-    }
+    Priority::from_db(value).unwrap_or(Priority::Medium)
 }
 
 pub(crate) fn recurrence_from_value(value: &str) -> Option<Recurrence> {
-    match value {
-        "daily" => Some(Recurrence::Daily),
-        "weekly" => Some(Recurrence::Weekly),
-        "biweekly" => Some(Recurrence::Biweekly),
-        "monthly" => Some(Recurrence::Monthly),
-        _ => None,
-    }
+    Recurrence::from_db(value)
 }
 
 pub(crate) fn recurrence_value(recurrence: Option<&Recurrence>) -> &'static str {
-    match recurrence {
-        Some(Recurrence::Daily) => "daily",
-        Some(Recurrence::Weekly) => "weekly",
-        Some(Recurrence::Biweekly) => "biweekly",
-        Some(Recurrence::Monthly) => "monthly",
-        None => "",
-    }
+    recurrence.map_or("", Recurrence::as_db)
 }
 
 pub(crate) fn recurrence_label(recurrence: Option<&Recurrence>, lang: Lang) -> &'static str {
@@ -120,21 +126,11 @@ pub(crate) fn recurrence_options(current: Option<Recurrence>, lang: ReadSignal<L
 }
 
 pub(crate) fn role_from_value(value: &str) -> Role {
-    match value {
-        "owner" => Role::Owner,
-        "admin" => Role::Admin,
-        "viewer" => Role::Viewer,
-        _ => Role::Member,
-    }
+    Role::from_db(value).unwrap_or(Role::Member)
 }
 
 pub(crate) fn ticket_status_from_value(value: &str) -> TicketStatus {
-    match value {
-        "in_progress" => TicketStatus::InProgress,
-        "resolved" => TicketStatus::Resolved,
-        "closed" => TicketStatus::Closed,
-        _ => TicketStatus::Open,
-    }
+    TicketStatus::from_db(value).unwrap_or(TicketStatus::Open)
 }
 
 pub(crate) fn ticket_status_label(status: &TicketStatus, lang: Lang) -> &'static str {

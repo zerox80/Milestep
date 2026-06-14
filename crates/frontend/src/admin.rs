@@ -48,15 +48,15 @@ pub(crate) fn admin_view(
             return;
         }
         let email = invite_email.get_untracked();
-        if email.trim().is_empty() {
-            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
-                "Bitte gib eine E-Mail ein.".into()
-            } else {
-                "Enter an email first.".into()
-            }));
+        if !require_nonempty(
+            &email,
+            lang.get_untracked(),
+            "Bitte gib eine E-Mail ein.",
+            "Enter an email first.",
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_invite_result.set(None);
         let role = invite_role.get_untracked();
         let workspace_id = workspace_id_for_invite.clone();
@@ -88,10 +88,7 @@ pub(crate) fn admin_view(
                         }
                     }
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_submit_error(err, set_local_error, set_error),
             }
         });
     };

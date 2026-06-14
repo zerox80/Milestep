@@ -8,7 +8,6 @@ pub(crate) fn task_detail(
     set_data: WriteSignal<Option<BootstrapDto>>,
     set_error: WriteSignal<Option<String>>,
 ) -> View {
-    let (comment, set_comment) = create_signal(String::new());
     let (editing, set_editing) = create_signal(false);
     let (title_edit, set_title_edit) = create_signal(task.title.clone());
     let (description_edit, set_description_edit) = create_signal(task.description.clone());
@@ -23,12 +22,10 @@ pub(crate) fn task_detail(
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
     let (uploading, set_uploading) = create_signal(false);
-    let (mention_open, set_mention_open) = create_signal(false);
-    let (mention_index, set_mention_index) = create_signal(0usize);
-    let mention_members = store_value(boot.members.clone());
     let can_edit = boot.current_role.can_edit();
-    // Editing or a half-typed comment must not be wiped by a background refetch.
-    hold_realtime_while(move || (can_edit && editing.get()) || !comment.get().trim().is_empty());
+    // Editing must not be wiped by a background refetch. The comment composer
+    // holds realtime on its own while a draft is in progress.
+    hold_realtime_while(move || can_edit && editing.get());
 
     let status_label = boot
         .statuses
@@ -52,10 +49,11 @@ pub(crate) fn task_detail(
     let comments = task.comments.clone();
     let task_id_base = task.id.clone();
     let task_id_for_upload = task.id.clone();
+    let task_id_for_comments = task.id.clone();
     let statuses_for_status_options = boot.statuses.clone();
     let members_for_display = boot.members.clone();
     let members_for_assign = boot.members.clone();
-    let member_names: Vec<String> = boot.members.iter().map(|m| m.name.clone()).collect();
+    let members_for_comments = boot.members;
 
     let delete_attachment = Callback::new(move |attachment_id: String| {
         spawn_local(async move {
@@ -71,15 +69,15 @@ pub(crate) fn task_detail(
 
     let task_id_for_save = task.id.clone();
     let save = move |_| {
-        if title_edit.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
-                "Bitte gib zuerst einen Aufgabentitel ein.".into()
-            } else {
-                "Add a task title first.".into()
-            }));
+        if !require_nonempty(
+            &title_edit.get_untracked(),
+            lang.get_untracked(),
+            "Bitte gib zuerst einen Aufgabentitel ein.",
+            "Add a task title first.",
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let payload = task_update_payload(TaskEditSnapshot {
             title: title_edit.get_untracked(),
@@ -99,10 +97,7 @@ pub(crate) fn task_detail(
                     set_editing.set(false);
                     set_error.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_submit_error(err, set_local_error, set_error),
             }
             set_busy.set(false);
         });
@@ -143,44 +138,6 @@ pub(crate) fn task_detail(
     let reset_phase = task.phase.clone();
     let reset_assignee = task.assignee_ids.first().cloned().unwrap_or_default();
     let reset_recurrence = task.recurrence;
-
-    let mention_candidates = move || -> Vec<MemberDto> {
-        let value = comment.get();
-        let Some((_, query)) = mention_query(&value) else {
-            return Vec::new();
-        };
-        let query = query.to_lowercase();
-        mention_members.with_value(|members| {
-            members
-                .iter()
-                .filter(|m| m.name.to_lowercase().contains(&query))
-                .cloned()
-                .collect()
-        })
-    };
-    let pick_mention = move |name: String| {
-        let value = comment.get_untracked();
-        if let Some((at, _)) = mention_query(&value) {
-            set_comment.set(format!("{}@{name} ", &value[..at]));
-        }
-        set_mention_open.set(false);
-        set_mention_index.set(0);
-    };
-    let task_id_for_comment_submit = task.id.clone();
-    let submit_comment = move || {
-        let body = comment.get_untracked();
-        if !body.trim().is_empty() {
-            add_comment(
-                task_id_for_comment_submit.clone(),
-                body,
-                set_data,
-                set_error,
-            );
-            set_comment.set(String::new());
-            set_mention_open.set(false);
-        }
-    };
-    let submit_comment_for_button = submit_comment.clone();
 
     view! {
         <div class="drawer-backdrop" on:click=move |_| set_open_task.set(None)></div>
@@ -357,80 +314,7 @@ pub(crate) fn task_detail(
                     }
                 })}
             </section>
-            <section>
-                <h3>{move || if lang.get() == Lang::De { "Kommentare" } else { "Comments" }}</h3>
-                {comments.into_iter().map(|c| {
-                    let created = if lang.get() == Lang::De { c.created_label_de } else { c.created_label_en };
-                    let body = comment_body_view(&c.body, &member_names);
-                    view! { <div class="comment"><span class="avatar tiny">{c.author_initials}</span><p><strong>{c.author_name}</strong><br/>{body}</p><small>{created}</small></div> }
-                }).collect_view()}
-                <div class="comment-box">
-                    {move || {
-                        let candidates = mention_candidates();
-                        (mention_open.get() && !candidates.is_empty()).then(|| view! {
-                            <div class="mention-pop">
-                                {candidates.into_iter().enumerate().map(|(i, m)| {
-                                    let name = m.name.clone();
-                                    view! {
-                                        <button type="button" class="mention-item" class:active=move || mention_index.get() == i
-                                            on:mousedown=move |ev| {
-                                                // Pick before the input loses focus.
-                                                ev.prevent_default();
-                                                pick_mention(name.clone());
-                                            }>
-                                            <span class="avatar tiny">{m.initials}</span>
-                                            <span class="mention-name">{m.name}</span>
-                                            <small>{m.email}</small>
-                                        </button>
-                                    }
-                                }).collect_view()}
-                            </div>
-                        })
-                    }}
-                    <input
-                        placeholder=move || if lang.get() == Lang::De { "Kommentar schreiben... (@ erwähnt)" } else { "Write a comment... (@ mentions)" }
-                        prop:value=comment
-                        on:input=move |ev| {
-                            let value = event_target_value(&ev);
-                            set_mention_open.set(mention_query(&value).is_some());
-                            set_mention_index.set(0);
-                            set_comment.set(value);
-                        }
-                        on:keydown=move |ev| {
-                            // The popup only counts as active while it has
-                            // candidates; a query without matches must not
-                            // swallow Enter (the user wants to submit).
-                            let candidates = if mention_open.get_untracked() {
-                                mention_candidates()
-                            } else {
-                                Vec::new()
-                            };
-                            if !candidates.is_empty() {
-                                match ev.key().as_str() {
-                                    "ArrowDown" => {
-                                        ev.prevent_default();
-                                        set_mention_index.update(|i| *i = (*i + 1) % candidates.len());
-                                    }
-                                    "ArrowUp" => {
-                                        ev.prevent_default();
-                                        set_mention_index.update(|i| *i = (*i + candidates.len() - 1) % candidates.len());
-                                    }
-                                    "Enter" | "Tab" => {
-                                        ev.prevent_default();
-                                        let index = mention_index.get_untracked().min(candidates.len() - 1);
-                                        pick_mention(candidates[index].name.clone());
-                                    }
-                                    "Escape" => set_mention_open.set(false),
-                                    _ => {}
-                                }
-                            } else if ev.key() == "Enter" {
-                                submit_comment();
-                            }
-                        }
-                    />
-                    <button on:click=move |_| submit_comment_for_button()>"Enter"</button>
-                </div>
-            </section>
+            {comments_section(task_id_for_comments, comments, members_for_comments, lang, set_data, set_error)}
             <section class="drawer-edit-actions" style=move || if can_edit && editing.get() { String::new() } else { "display:none".to_string() }>
                 {move || local_error.get().map(|err| view! { <div class="modal-error inline">{err}</div> })}
                 <button class="btn ghost" on:click=move |_| {

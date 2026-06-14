@@ -31,15 +31,15 @@ pub(crate) fn create_task_modal(
     hold_realtime_while(|| true);
 
     let create = move |_| {
-        if title.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
-                "Bitte gib zuerst einen Aufgabentitel ein.".into()
-            } else {
-                "Add a task title first.".into()
-            }));
+        if !require_nonempty(
+            &title.get_untracked(),
+            lang.get_untracked(),
+            "Bitte gib zuerst einen Aufgabentitel ein.",
+            "Add a task title first.",
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let payload = CreateTaskRequest {
             project_id: boot.project.id.clone(),
@@ -68,10 +68,7 @@ pub(crate) fn create_task_modal(
                     set_show_create.set(false);
                     set_error.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_submit_error(err, set_local_error, set_error),
             }
             set_busy.set(false);
         });
@@ -150,15 +147,15 @@ pub(crate) fn create_ticket_modal(
     hold_realtime_while(|| true);
 
     let create = move |_| {
-        if title.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
-                "Bitte gib zuerst einen Tickettitel ein.".into()
-            } else {
-                "Add a ticket title first.".into()
-            }));
+        if !require_nonempty(
+            &title.get_untracked(),
+            lang.get_untracked(),
+            "Bitte gib zuerst einen Tickettitel ein.",
+            "Add a ticket title first.",
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let assignee = assignee_id.get_untracked();
         let payload = CreateTicketRequest {
@@ -181,10 +178,7 @@ pub(crate) fn create_ticket_modal(
                     set_show_create_ticket.set(false);
                     set_error.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_submit_error(err, set_local_error, set_error),
             }
             set_busy.set(false);
         });
@@ -255,15 +249,15 @@ pub(crate) fn create_milestone_modal(
     hold_realtime_while(|| true);
 
     let create = move |_| {
-        if title.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
-                "Bitte gib zuerst einen Meilenstein-Titel ein.".into()
-            } else {
-                "Add a milestone title first.".into()
-            }));
+        if !require_nonempty(
+            &title.get_untracked(),
+            lang.get_untracked(),
+            "Bitte gib zuerst einen Meilenstein-Titel ein.",
+            "Add a milestone title first.",
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let payload = CreateMilestoneRequest {
             project_id: boot.project.id.clone(),
@@ -284,10 +278,7 @@ pub(crate) fn create_milestone_modal(
                     set_show_create_milestone.set(false);
                     set_error.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_submit_error(err, set_local_error, set_error),
             }
             set_busy.set(false);
         });

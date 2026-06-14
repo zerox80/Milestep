@@ -39,15 +39,15 @@ pub(crate) fn ticket_detail(
 
     let ticket_id_for_save = ticket.id.clone();
     let save = move |_| {
-        if title.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(if lang.get_untracked() == Lang::De {
-                "Bitte gib zuerst einen Tickettitel ein.".into()
-            } else {
-                "Add a ticket title first.".into()
-            }));
+        if !require_nonempty(
+            &title.get_untracked(),
+            lang.get_untracked(),
+            "Bitte gib zuerst einen Tickettitel ein.",
+            "Add a ticket title first.",
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let assignee = assignee_id.get_untracked();
         let payload = UpdateTicketRequest {
@@ -66,10 +66,7 @@ pub(crate) fn ticket_detail(
                     set_error.set(None);
                     set_open_ticket.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_submit_error(err, set_local_error, set_error),
             }
             set_busy.set(false);
         });

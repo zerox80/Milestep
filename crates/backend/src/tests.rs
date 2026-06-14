@@ -99,6 +99,12 @@ fn shift_date_monthly_clamps_to_month_end() {
         shift_date(date, Recurrence::Monthly),
         NaiveDate::from_ymd_opt(2026, 2, 28).unwrap()
     );
+    // In a leap year the same clamp lands on Feb 29.
+    let leap = NaiveDate::from_ymd_opt(2028, 1, 31).unwrap();
+    assert_eq!(
+        shift_date(leap, Recurrence::Monthly),
+        NaiveDate::from_ymd_opt(2028, 2, 29).unwrap()
+    );
 }
 
 #[test]

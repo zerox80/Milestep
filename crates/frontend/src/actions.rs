@@ -233,6 +233,17 @@ pub(crate) async fn refresh_bootstrap(
     }
 }
 
+/// Surfaces a failed form submission both inline (the modal/drawer error) and
+/// globally (the app-level banner), the shared `Err` arm of every form submit.
+pub(crate) fn report_submit_error(
+    err: ApiError,
+    set_local_error: WriteSignal<Option<String>>,
+    set_error: WriteSignal<Option<String>>,
+) {
+    set_local_error.set(Some(err.message.clone()));
+    set_error.set(Some(err.message));
+}
+
 pub(crate) fn replace_task(set_data: WriteSignal<Option<BootstrapDto>>, task: TaskDto) {
     update_bootstrap(set_data, |data| {
         if let Some(current) = data.tasks.iter_mut().find(|t| t.id == task.id) {

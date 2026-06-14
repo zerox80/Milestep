@@ -11,76 +11,8 @@ where
     Deserialize::deserialize(de).map(Some)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Owner,
-    Admin,
-    Member,
-    Viewer,
-}
-
-impl Role {
-    pub const fn can_admin(&self) -> bool {
-        matches!(self, Self::Owner | Self::Admin)
-    }
-
-    pub const fn can_edit(&self) -> bool {
-        matches!(self, Self::Owner | Self::Admin | Self::Member)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MemberStatus {
-    Active,
-    Invited,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Priority {
-    Urgent,
-    High,
-    Medium,
-    Low,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TicketStatus {
-    Open,
-    InProgress,
-    Resolved,
-    Closed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationKind {
-    Assigned,
-    Mention,
-    Due,
-    Comment,
-    Done,
-    Milestone,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AttachmentKind {
-    File,
-    Image,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Recurrence {
-    Daily,
-    Weekly,
-    Biweekly,
-    Monthly,
-}
+mod enums;
+pub use enums::*;
 
 /// Lightweight realtime event broadcast to all sockets of a workspace.
 /// Carries no entity data: receivers refetch the bootstrap payload.

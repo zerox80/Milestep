@@ -1,23 +1,41 @@
 use crate::*;
 
+/// Resolves an entity id to the caller's `(workspace_id, role)` via an active
+/// membership, or `Forbidden` if there is none. `sql` selects `p.workspace_id,
+/// m.role` and is bound with `$1 = entity id`, `$2 = user id`; it is a static
+/// literal (the only varying part between the `*_access` functions), so no user
+/// input is ever interpolated into the query.
+async fn entity_access(
+    db: &PgPool,
+    user_id: Uuid,
+    id: Uuid,
+    sql: &'static str,
+) -> Result<(Uuid, Role), AppError> {
+    let row: Option<(Uuid, String)> = sqlx::query_as(sql)
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+    let Some((workspace_id, role)) = row else {
+        return Err(AppError::Forbidden);
+    };
+    Ok((workspace_id, role_from_db(&role)?))
+}
+
 pub(crate) async fn project_access(
     db: &PgPool,
     user_id: Uuid,
     project_id: Uuid,
 ) -> Result<(Uuid, Role), AppError> {
-    let row: Option<(Uuid, String)> = sqlx::query_as(
+    entity_access(
+        db,
+        user_id,
+        project_id,
         "SELECT p.workspace_id, m.role \
          FROM projects p JOIN memberships m ON m.workspace_id = p.workspace_id \
          WHERE p.id = $1 AND m.user_id = $2 AND m.status = 'active'",
     )
-    .bind(project_id)
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
-    let Some((workspace_id, role)) = row else {
-        return Err(AppError::Forbidden);
-    };
-    Ok((workspace_id, role_from_db(&role)?))
+    .await
 }
 
 pub(crate) async fn assert_project_edit(
@@ -37,20 +55,16 @@ pub(crate) async fn milestone_access(
     user_id: Uuid,
     milestone_id: Uuid,
 ) -> Result<(Uuid, Role), AppError> {
-    let row: Option<(Uuid, String)> = sqlx::query_as(
+    entity_access(
+        db,
+        user_id,
+        milestone_id,
         "SELECT p.workspace_id, m.role \
          FROM milestones ms JOIN projects p ON p.id = ms.project_id \
          JOIN memberships m ON m.workspace_id = p.workspace_id \
          WHERE ms.id = $1 AND m.user_id = $2 AND m.status = 'active'",
     )
-    .bind(milestone_id)
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
-    let Some((workspace_id, role)) = row else {
-        return Err(AppError::Forbidden);
-    };
-    Ok((workspace_id, role_from_db(&role)?))
+    .await
 }
 
 pub(crate) async fn assert_milestone_edit(
@@ -70,20 +84,16 @@ pub(crate) async fn task_access(
     user_id: Uuid,
     task_id: Uuid,
 ) -> Result<(Uuid, Role), AppError> {
-    let row: Option<(Uuid, String)> = sqlx::query_as(
+    entity_access(
+        db,
+        user_id,
+        task_id,
         "SELECT p.workspace_id, m.role \
          FROM tasks t JOIN projects p ON p.id = t.project_id \
          JOIN memberships m ON m.workspace_id = p.workspace_id \
          WHERE t.id = $1 AND m.user_id = $2 AND m.status = 'active'",
     )
-    .bind(task_id)
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
-    let Some((workspace_id, role)) = row else {
-        return Err(AppError::Forbidden);
-    };
-    Ok((workspace_id, role_from_db(&role)?))
+    .await
 }
 
 pub(crate) async fn assert_task_read(
@@ -112,20 +122,16 @@ pub(crate) async fn ticket_access(
     user_id: Uuid,
     ticket_id: Uuid,
 ) -> Result<(Uuid, Role), AppError> {
-    let row: Option<(Uuid, String)> = sqlx::query_as(
+    entity_access(
+        db,
+        user_id,
+        ticket_id,
         "SELECT p.workspace_id, m.role \
          FROM tickets t JOIN projects p ON p.id = t.project_id \
          JOIN memberships m ON m.workspace_id = p.workspace_id \
          WHERE t.id = $1 AND m.user_id = $2 AND m.status = 'active'",
     )
-    .bind(ticket_id)
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
-    let Some((workspace_id, role)) = row else {
-        return Err(AppError::Forbidden);
-    };
-    Ok((workspace_id, role_from_db(&role)?))
+    .await
 }
 
 pub(crate) async fn assert_ticket_read(
