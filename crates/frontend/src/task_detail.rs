@@ -71,18 +71,15 @@ pub(crate) fn task_detail(
 
     let task_id_for_save = task.id.clone();
     let save = move |_| {
-        if title_edit.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(
-                lang.get_untracked()
-                    .tr(
-                        "Bitte gib zuerst einen Aufgabentitel ein.",
-                        "Add a task title first.",
-                    )
-                    .into(),
-            ));
+        if !require_title(
+            &title_edit.get_untracked(),
+            "Bitte gib zuerst einen Aufgabentitel ein.",
+            "Add a task title first.",
+            lang.get_untracked(),
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let payload = task_update_payload(TaskEditSnapshot {
             title: title_edit.get_untracked(),
@@ -102,10 +99,7 @@ pub(crate) fn task_detail(
                     set_editing.set(false);
                     set_error.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_api_error(&err, set_local_error, set_error),
             }
             set_busy.set(false);
         });
@@ -114,12 +108,7 @@ pub(crate) fn task_detail(
     let task_id_for_delete = task.id.clone();
     let title_for_delete = title.clone();
     let delete = move |_| {
-        let confirm_text = if lang.get_untracked().is_de() {
-            format!("{title_for_delete} wirklich loeschen?")
-        } else {
-            format!("Delete {title_for_delete}?")
-        };
-        if !confirm(&confirm_text) {
+        if !confirm_delete(&title_for_delete, lang.get_untracked()) {
             return;
         }
         let task_id = task_id_for_delete.clone();
@@ -258,19 +247,13 @@ pub(crate) fn task_detail(
                         <span>
                             <small>{move || lang.get().tr("Prioritaet", "Priority")}</small>
                             <select on:change=move |ev| set_priority_edit.set(priority_from_value(&select_value(&ev)))>
-                                <option value="urgent" selected=current_priority == Priority::Urgent>{move || lang.get().tr("Dringend", "Urgent")}</option>
-                                <option value="high" selected=current_priority == Priority::High>{move || lang.get().tr("Hoch", "High")}</option>
-                                <option value="medium" selected=current_priority == Priority::Medium>{move || lang.get().tr("Mittel", "Medium")}</option>
-                                <option value="low" selected=current_priority == Priority::Low>{move || lang.get().tr("Niedrig", "Low")}</option>
+                                {priority_options(current_priority, lang)}
                             </select>
                         </span>
                         <span>
                             <small>"Phase"</small>
                             <select on:change=move |ev| set_phase_edit.set(select_value(&ev))>
-                                <option value="planung" selected=current_phase == "planung">{move || lang.get().tr("Planung", "Planning")}</option>
-                                <option value="vergabe" selected=current_phase == "vergabe">{move || lang.get().tr("Vergabe", "Tendering")}</option>
-                                <option value="ausfuehrung" selected=current_phase == "ausfuehrung">{move || lang.get().tr("Ausfuehrung", "Execution")}</option>
-                                <option value="abnahme" selected=current_phase == "abnahme">{move || lang.get().tr("Abnahme", "Handover")}</option>
+                                {phase_options(current_phase, lang)}
                             </select>
                         </span>
                         <span>

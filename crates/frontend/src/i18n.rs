@@ -119,6 +119,89 @@ pub(crate) fn recurrence_options(current: Option<Recurrence>, lang: ReadSignal<L
     .collect_view()
 }
 
+pub(crate) fn priority_value(priority: &Priority) -> &'static str {
+    match priority {
+        Priority::Urgent => "urgent",
+        Priority::High => "high",
+        Priority::Medium => "medium",
+        Priority::Low => "low",
+    }
+}
+
+/// Priority `<option>`s with `current` preselected, labels following `lang`.
+pub(crate) fn priority_options(current: Priority, lang: ReadSignal<Lang>) -> View {
+    [
+        Priority::Urgent,
+        Priority::High,
+        Priority::Medium,
+        Priority::Low,
+    ]
+    .into_iter()
+    .map(|option| {
+        let selected = option == current;
+        let value = priority_value(&option);
+        view! {
+            <option value=value selected=selected>
+                {move || priority_label(&option, lang.get())}
+            </option>
+        }
+    })
+    .collect_view()
+}
+
+pub(crate) fn ticket_status_value(status: &TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Open => "open",
+        TicketStatus::InProgress => "in_progress",
+        TicketStatus::Resolved => "resolved",
+        TicketStatus::Closed => "closed",
+    }
+}
+
+/// Ticket-status `<option>`s with `current` preselected, labels following `lang`.
+pub(crate) fn ticket_status_options(current: TicketStatus, lang: ReadSignal<Lang>) -> View {
+    [
+        TicketStatus::Open,
+        TicketStatus::InProgress,
+        TicketStatus::Resolved,
+        TicketStatus::Closed,
+    ]
+    .into_iter()
+    .map(|option| {
+        let selected = option == current;
+        let value = ticket_status_value(&option);
+        view! {
+            <option value=value selected=selected>
+                {move || ticket_status_label(&option, lang.get())}
+            </option>
+        }
+    })
+    .collect_view()
+}
+
+/// Canonical project phases in roadmap order, with their `(value, DE, EN)` labels.
+pub(crate) const PHASES: [(&str, &str, &str); 4] = [
+    ("planung", "Planung", "Planning"),
+    ("vergabe", "Vergabe", "Tendering"),
+    ("ausfuehrung", "Ausführung", "Execution"),
+    ("abnahme", "Abnahme", "Handover"),
+];
+
+/// Phase `<option>`s with `current` preselected, labels following `lang`.
+pub(crate) fn phase_options(current: String, lang: ReadSignal<Lang>) -> View {
+    PHASES
+        .into_iter()
+        .map(|(value, de, en)| {
+            let selected = value == current;
+            view! {
+                <option value=value selected=selected>
+                    {move || if lang.get().is_de() { de } else { en }}
+                </option>
+            }
+        })
+        .collect_view()
+}
+
 pub(crate) fn role_from_value(value: &str) -> Role {
     match value {
         "owner" => Role::Owner,

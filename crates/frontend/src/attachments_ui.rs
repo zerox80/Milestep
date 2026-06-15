@@ -58,12 +58,7 @@ pub(crate) fn attachment_view(
                 let file_name = file_name.clone();
                 view! {
                     <button class="danger-link" on:click=move |_| {
-                        let confirm_text = if lang.get_untracked().is_de() {
-                            format!("Anhang {file_name} wirklich loeschen?")
-                        } else {
-                            format!("Delete attachment {file_name}?")
-                        };
-                        if confirm(&confirm_text) {
+                        if confirm_delete_attachment(&file_name, lang.get_untracked()) {
                             on_delete.call(attachment_id.clone());
                         }
                     }>{move || lang.get().tr("Loeschen", "Delete")}</button>

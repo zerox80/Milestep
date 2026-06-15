@@ -203,12 +203,7 @@ pub(crate) fn remove_member(
     set_data: WriteSignal<Option<BootstrapDto>>,
     set_error: WriteSignal<Option<String>>,
 ) {
-    let confirm_text = if lang.get_untracked().is_de() {
-        format!("{member_name} wirklich aus dem Workspace entfernen?")
-    } else {
-        format!("Remove {member_name} from the workspace?")
-    };
-    if !confirm(&confirm_text) {
+    if !confirm_remove_member(&member_name, lang.get_untracked()) {
         return;
     }
     spawn_local(async move {
@@ -267,12 +262,7 @@ pub(crate) fn delete_milestone(
     set_data: WriteSignal<Option<BootstrapDto>>,
     set_error: WriteSignal<Option<String>>,
 ) {
-    let confirm_text = if lang.get_untracked().is_de() {
-        format!("{milestone_title} wirklich loeschen?")
-    } else {
-        format!("Delete {milestone_title}?")
-    };
-    if !confirm(&confirm_text) {
+    if !confirm_delete(&milestone_title, lang.get_untracked()) {
         return;
     }
     spawn_local(async move {

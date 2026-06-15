@@ -39,18 +39,15 @@ pub(crate) fn ticket_detail(
 
     let ticket_id_for_save = ticket.id.clone();
     let save = move |_| {
-        if title.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(
-                lang.get_untracked()
-                    .tr(
-                        "Bitte gib zuerst einen Tickettitel ein.",
-                        "Add a ticket title first.",
-                    )
-                    .into(),
-            ));
+        if !require_title(
+            &title.get_untracked(),
+            "Bitte gib zuerst einen Tickettitel ein.",
+            "Add a ticket title first.",
+            lang.get_untracked(),
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let assignee = assignee_id.get_untracked();
         let payload = UpdateTicketRequest {
@@ -69,10 +66,7 @@ pub(crate) fn ticket_detail(
                     set_error.set(None);
                     set_open_ticket.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_api_error(&err, set_local_error, set_error),
             }
             set_busy.set(false);
         });
@@ -81,12 +75,7 @@ pub(crate) fn ticket_detail(
     let ticket_id_for_delete = ticket.id.clone();
     let ticket_title_for_delete = ticket.title.clone();
     let delete = move |_| {
-        let confirm_text = if lang.get_untracked().is_de() {
-            format!("{ticket_title_for_delete} wirklich loeschen?")
-        } else {
-            format!("Delete {ticket_title_for_delete}?")
-        };
-        if !confirm(&confirm_text) {
+        if !confirm_delete(&ticket_title_for_delete, lang.get_untracked()) {
             return;
         }
         let ticket_id = ticket_id_for_delete.clone();
@@ -131,16 +120,10 @@ pub(crate) fn ticket_detail(
                 <div class="modal-meta ticket-meta">
                     <input placeholder=move || lang.get().tr("Melder / Kontakt", "Requester / contact") prop:value=requester_name on:input=move |ev| set_requester_name.set(event_target_value(&ev)) disabled=!can_edit/>
                     <select on:change=move |ev| set_status.set(ticket_status_from_value(&select_value(&ev))) disabled=!can_edit>
-                        <option value="open" selected=current_status == TicketStatus::Open>{move || lang.get().tr("Offen", "Open")}</option>
-                        <option value="in_progress" selected=current_status == TicketStatus::InProgress>{move || lang.get().tr("In Arbeit", "In progress")}</option>
-                        <option value="resolved" selected=current_status == TicketStatus::Resolved>{move || lang.get().tr("Geloest", "Resolved")}</option>
-                        <option value="closed" selected=current_status == TicketStatus::Closed>{move || lang.get().tr("Geschlossen", "Closed")}</option>
+                        {ticket_status_options(current_status, lang)}
                     </select>
                     <select on:change=move |ev| set_priority.set(priority_from_value(&select_value(&ev))) disabled=!can_edit>
-                        <option value="urgent" selected=current_priority == Priority::Urgent>{move || lang.get().tr("Dringend", "Urgent")}</option>
-                        <option value="high" selected=current_priority == Priority::High>{move || lang.get().tr("Hoch", "High")}</option>
-                        <option value="medium" selected=current_priority == Priority::Medium>{move || lang.get().tr("Mittel", "Medium")}</option>
-                        <option value="low" selected=current_priority == Priority::Low>{move || lang.get().tr("Niedrig", "Low")}</option>
+                        {priority_options(current_priority, lang)}
                     </select>
                     <select on:change=move |ev| set_assignee_id.set(select_value(&ev)) disabled=!can_edit>
                         <option value="" selected=current_assignee.is_empty()>{move || lang.get().tr("Nicht zugewiesen", "Unassigned")}</option>

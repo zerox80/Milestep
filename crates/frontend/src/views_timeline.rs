@@ -297,44 +297,12 @@ pub(crate) fn roadmap_view(
     lang: ReadSignal<Lang>,
     set_open_task: WriteSignal<Option<String>>,
 ) -> View {
-    let phases = [
-        (
-            "planung",
-            if lang.get().is_de() {
-                "Planung"
-            } else {
-                "Planning"
-            },
-        ),
-        (
-            "vergabe",
-            if lang.get().is_de() {
-                "Vergabe"
-            } else {
-                "Tendering"
-            },
-        ),
-        (
-            "ausfuehrung",
-            if lang.get().is_de() {
-                "Ausführung"
-            } else {
-                "Execution"
-            },
-        ),
-        (
-            "abnahme",
-            if lang.get().is_de() {
-                "Abnahme"
-            } else {
-                "Handover"
-            },
-        ),
-    ];
+    let lang_now = lang.get();
     let all_tasks = boot.tasks;
     view! {
         <div class="roadmap-grid">
-            {phases.into_iter().map(|(phase, label)| {
+            {PHASES.into_iter().map(|(phase, de, en)| {
+                let label = if lang_now.is_de() { de } else { en };
                 let tasks = all_tasks.iter().filter(|t| t.phase == phase).cloned().collect::<Vec<_>>();
                 let done = tasks.iter().filter(|t| t.status_is_done).count();
                 let pct = if tasks.is_empty() { 0 } else { done * 100 / tasks.len() };

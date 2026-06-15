@@ -31,18 +31,15 @@ pub(crate) fn create_task_modal(
     hold_realtime_while(|| true);
 
     let create = move |_| {
-        if title.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(
-                lang.get_untracked()
-                    .tr(
-                        "Bitte gib zuerst einen Aufgabentitel ein.",
-                        "Add a task title first.",
-                    )
-                    .into(),
-            ));
+        if !require_title(
+            &title.get_untracked(),
+            "Bitte gib zuerst einen Aufgabentitel ein.",
+            "Add a task title first.",
+            lang.get_untracked(),
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let payload = CreateTaskRequest {
             project_id: boot.project.id.clone(),
@@ -71,10 +68,7 @@ pub(crate) fn create_task_modal(
                     set_show_create.set(false);
                     set_error.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_api_error(&err, set_local_error, set_error),
             }
             set_busy.set(false);
         });
@@ -108,19 +102,13 @@ pub(crate) fn create_task_modal(
                     </select>
                     <input type="date" prop:value=due_date on:input=move |ev| set_due_date.set(event_target_value(&ev))/>
                     <select on:change=move |ev| set_priority.set(priority_from_value(&select_value(&ev)))>
-                        <option value="urgent">"Dringend"</option>
-                        <option value="high">"Hoch"</option>
-                        <option value="medium" selected>"Mittel"</option>
-                        <option value="low">"Niedrig"</option>
+                        {priority_options(Priority::Medium, lang)}
                     </select>
                     <select on:change=move |ev| set_status_id.set(select_value(&ev))>
                         {boot.statuses.into_iter().map(|s| { let label = status_name(&s, lang.get()).to_string(); view! { <option value=s.id>{label}</option> } }).collect_view()}
                     </select>
                     <select on:change=move |ev| set_phase.set(select_value(&ev))>
-                        <option value="planung">{move || lang.get().tr("Planung", "Planning")}</option>
-                        <option value="vergabe">{move || lang.get().tr("Vergabe", "Tendering")}</option>
-                        <option value="ausfuehrung" selected>{move || lang.get().tr("Ausführung", "Execution")}</option>
-                        <option value="abnahme">{move || lang.get().tr("Abnahme", "Handover")}</option>
+                        {phase_options("ausfuehrung".to_string(), lang)}
                     </select>
                     <select on:change=move |ev| set_recurrence.set(recurrence_from_value(&select_value(&ev)))>
                         {recurrence_options(None, lang)}
@@ -153,18 +141,15 @@ pub(crate) fn create_ticket_modal(
     hold_realtime_while(|| true);
 
     let create = move |_| {
-        if title.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(
-                lang.get_untracked()
-                    .tr(
-                        "Bitte gib zuerst einen Tickettitel ein.",
-                        "Add a ticket title first.",
-                    )
-                    .into(),
-            ));
+        if !require_title(
+            &title.get_untracked(),
+            "Bitte gib zuerst einen Tickettitel ein.",
+            "Add a ticket title first.",
+            lang.get_untracked(),
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let assignee = assignee_id.get_untracked();
         let payload = CreateTicketRequest {
@@ -187,10 +172,7 @@ pub(crate) fn create_ticket_modal(
                     set_show_create_ticket.set(false);
                     set_error.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_api_error(&err, set_local_error, set_error),
             }
             set_busy.set(false);
         });
@@ -221,16 +203,10 @@ pub(crate) fn create_ticket_modal(
                 <div class="modal-meta ticket-meta">
                     <input placeholder=move || lang.get().tr("Melder / Kontakt", "Requester / contact") prop:value=requester_name on:input=move |ev| set_requester_name.set(event_target_value(&ev))/>
                     <select on:change=move |ev| set_status.set(ticket_status_from_value(&select_value(&ev)))>
-                        <option value="open" selected>{move || lang.get().tr("Offen", "Open")}</option>
-                        <option value="in_progress">{move || lang.get().tr("In Arbeit", "In progress")}</option>
-                        <option value="resolved">{move || lang.get().tr("Geloest", "Resolved")}</option>
-                        <option value="closed">{move || lang.get().tr("Geschlossen", "Closed")}</option>
+                        {ticket_status_options(TicketStatus::Open, lang)}
                     </select>
                     <select on:change=move |ev| set_priority.set(priority_from_value(&select_value(&ev)))>
-                        <option value="urgent">"Dringend"</option>
-                        <option value="high">"Hoch"</option>
-                        <option value="medium" selected>"Mittel"</option>
-                        <option value="low">"Niedrig"</option>
+                        {priority_options(Priority::Medium, lang)}
                     </select>
                     <select on:change=move |ev| set_assignee_id.set(select_value(&ev))>
                         <option value="">{move || lang.get().tr("Nicht zugewiesen", "Unassigned")}</option>
@@ -261,18 +237,15 @@ pub(crate) fn create_milestone_modal(
     hold_realtime_while(|| true);
 
     let create = move |_| {
-        if title.get_untracked().trim().is_empty() {
-            set_local_error.set(Some(
-                lang.get_untracked()
-                    .tr(
-                        "Bitte gib zuerst einen Meilenstein-Titel ein.",
-                        "Add a milestone title first.",
-                    )
-                    .into(),
-            ));
+        if !require_title(
+            &title.get_untracked(),
+            "Bitte gib zuerst einen Meilenstein-Titel ein.",
+            "Add a milestone title first.",
+            lang.get_untracked(),
+            set_local_error,
+        ) {
             return;
         }
-        set_local_error.set(None);
         set_busy.set(true);
         let payload = CreateMilestoneRequest {
             project_id: boot.project.id.clone(),
@@ -293,10 +266,7 @@ pub(crate) fn create_milestone_modal(
                     set_show_create_milestone.set(false);
                     set_error.set(None);
                 }
-                Err(err) => {
-                    set_local_error.set(Some(err.message.clone()));
-                    set_error.set(Some(err.message));
-                }
+                Err(err) => report_api_error(&err, set_local_error, set_error),
             }
             set_busy.set(false);
         });
@@ -323,10 +293,7 @@ pub(crate) fn create_milestone_modal(
                 <div class="modal-meta milestone-meta">
                     <input type="date" prop:value=due_date on:input=move |ev| set_due_date.set(event_target_value(&ev))/>
                     <select on:change=move |ev| set_phase.set(select_value(&ev))>
-                        <option value="planung" selected>{move || lang.get().tr("Planung", "Planning")}</option>
-                        <option value="vergabe">{move || lang.get().tr("Vergabe", "Tendering")}</option>
-                        <option value="ausfuehrung">{move || lang.get().tr("Ausfuehrung", "Execution")}</option>
-                        <option value="abnahme">{move || lang.get().tr("Abnahme", "Handover")}</option>
+                        {phase_options("planung".to_string(), lang)}
                     </select>
                 </div>
                 <footer>
