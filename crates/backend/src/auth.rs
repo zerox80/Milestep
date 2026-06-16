@@ -55,7 +55,6 @@ pub(crate) async fn register(
     }
 
     let user_id = Uuid::new_v4();
-    let password_hash = hash_password_async(&state, payload.password.clone()).await?;
 
     let mut tx = state.db.begin().await?;
     // The fast-path check above can race two concurrent first-user registrations
@@ -72,23 +71,11 @@ pub(crate) async fn register(
             return Err(AppError::Forbidden);
         }
     }
-    let inserted =
-        sqlx::query("INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4)")
-            .bind(user_id)
-            .bind(&email)
-            .bind(payload.name.trim())
-            .bind(password_hash)
-            .execute(&mut *tx)
-            .await;
-    if let Err(err) = inserted {
-        if is_unique_violation(&err) {
-            return Err(AppError::Conflict("email is already registered".into()));
-        }
-        return Err(err.into());
-    }
 
-    let workspace_id = match invite_hash {
-        None => create_workspace_for_user(&mut tx, user_id, payload.name.trim()).await?,
+    // Resolve the invite (if any) and validate it before paying for the
+    // expensive Argon2 hash. The hash is still computed inside the transaction
+    // so a concurrent unique violation or expired invite does not waste it.
+    let invite_workspace = match invite_hash {
         Some(hash) => {
             let invite: Option<(Uuid, Uuid, String)> = sqlx::query_as(
                 "DELETE FROM workspace_invites \
@@ -105,6 +92,31 @@ pub(crate) async fn register(
                 ));
             };
             role_from_db(&role)?;
+            Some((invite_workspace, role))
+        }
+        None => None,
+    };
+
+    let password_hash = hash_password_async(&state, payload.password.clone()).await?;
+
+    let inserted =
+        sqlx::query("INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4)")
+            .bind(user_id)
+            .bind(&email)
+            .bind(payload.name.trim())
+            .bind(password_hash)
+            .execute(&mut *tx)
+            .await;
+    if let Err(err) = inserted {
+        if is_unique_violation(&err) {
+            return Err(AppError::Conflict("email is already registered".into()));
+        }
+        return Err(err.into());
+    }
+
+    let workspace_id = match invite_workspace {
+        None => create_workspace_for_user(&mut tx, user_id, payload.name.trim()).await?,
+        Some((invite_workspace, role)) => {
             sqlx::query(
                 "INSERT INTO memberships (id, workspace_id, user_id, role, status, last_active_at) \
                  VALUES ($1, $2, $3, $4, 'active', now()) \

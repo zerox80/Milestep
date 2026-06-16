@@ -100,8 +100,12 @@ pub(crate) async fn spawn_recurrence_if_completed(
     .bind(&source.tag_color)
     .bind(&source.priority)
     .bind(status_id)
-    .bind(source.start_date.map(|d| shift_date(d, recurrence)))
-    .bind(source.due_date.map(|d| shift_date(d, recurrence)))
+    .bind(shifted_start_date(source.start_date, recurrence))
+    .bind(shifted_due_date(
+        source.start_date,
+        source.due_date,
+        recurrence,
+    ))
     .bind(&source.phase)
     .bind(recurrence_to_db(recurrence))
     .bind(source.created_by)
@@ -145,5 +149,36 @@ pub(crate) fn shift_date(date: NaiveDate, recurrence: Recurrence) -> NaiveDate {
         Recurrence::Monthly => date
             .checked_add_months(chrono::Months::new(1))
             .unwrap_or(date),
+    }
+}
+
+/// Shifts the start date by the recurrence step. For monthly recurrences this
+/// is the same calendar day (clamped to month-end), matching `shift_date`.
+pub(crate) fn shifted_start_date(
+    start_date: Option<NaiveDate>,
+    recurrence: Recurrence,
+) -> Option<NaiveDate> {
+    start_date.map(|d| shift_date(d, recurrence))
+}
+
+/// Shifts the due date so the task duration is preserved. For fixed-step
+/// recurrences the due date moves by the same step as the start date. For
+/// monthly recurrences the offset in days between start and due is added to
+/// the shifted start date, so a task that spans e.g. Jan 1 – Jan 31 still
+/// spans 31 days in the next instance.
+pub(crate) fn shifted_due_date(
+    start_date: Option<NaiveDate>,
+    due_date: Option<NaiveDate>,
+    recurrence: Recurrence,
+) -> Option<NaiveDate> {
+    match (start_date, due_date, recurrence) {
+        (Some(start), Some(due), Recurrence::Monthly) => {
+            let duration_days = due.signed_duration_since(start).num_days();
+            let new_start = shift_date(start, recurrence);
+            Some(new_start + Duration::days(duration_days))
+        }
+        (Some(_), Some(due), _) => Some(shift_date(due, recurrence)),
+        (None, Some(due), _) => Some(shift_date(due, recurrence)),
+        (_, None, _) => None,
     }
 }

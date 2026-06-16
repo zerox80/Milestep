@@ -146,7 +146,10 @@ fn env_flag(primary: &str, fallback: &str) -> bool {
 }
 
 fn flag_is_enabled(value: &str) -> bool {
-    matches!(value, "1" | "true" | "TRUE")
+    matches!(
+        value.trim().to_lowercase().as_str(),
+        "1" | "true" | "yes" | "on" | "enable" | "enabled"
+    )
 }
 
 fn env_i64(primary: &str, fallback: &str) -> anyhow::Result<Option<i64>> {

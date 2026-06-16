@@ -147,6 +147,46 @@ fn viewer_cannot_edit_but_members_and_up_can() {
     assert!(!Role::Viewer.can_admin());
 }
 
+#[test]
+fn monthly_recurrence_preserves_task_duration() {
+    let jan_1 = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let jan_31 = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+    let feb_1 = NaiveDate::from_ymd_opt(2026, 2, 1).unwrap();
+    let mar_3 = NaiveDate::from_ymd_opt(2026, 3, 3).unwrap();
+    assert_eq!(
+        shifted_due_date(Some(jan_1), Some(jan_31), Recurrence::Monthly),
+        Some(mar_3)
+    );
+    assert_eq!(
+        shifted_start_date(Some(jan_1), Recurrence::Monthly),
+        Some(feb_1)
+    );
+
+    // Same-day monthly task clamps both dates to month-end.
+    assert_eq!(
+        shifted_due_date(Some(jan_31), Some(jan_31), Recurrence::Monthly),
+        Some(NaiveDate::from_ymd_opt(2026, 2, 28).unwrap())
+    );
+}
+
+#[test]
+fn fixed_recurrences_shift_start_and_due_by_same_step() {
+    let jan_1 = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let jan_5 = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+    assert_eq!(
+        shifted_due_date(Some(jan_1), Some(jan_5), Recurrence::Daily),
+        Some(NaiveDate::from_ymd_opt(2026, 1, 6).unwrap())
+    );
+    assert_eq!(
+        shifted_due_date(Some(jan_1), Some(jan_5), Recurrence::Weekly),
+        Some(NaiveDate::from_ymd_opt(2026, 1, 12).unwrap())
+    );
+    assert_eq!(
+        shifted_due_date(Some(jan_1), Some(jan_5), Recurrence::Biweekly),
+        Some(NaiveDate::from_ymd_opt(2026, 1, 19).unwrap())
+    );
+}
+
 fn test_config() -> AppConfig {
     AppConfig {
         bind: "127.0.0.1:0".into(),

@@ -173,6 +173,7 @@ pub(crate) struct MembershipWorkspaceRow {
     pub(crate) workspace_id: Uuid,
     pub(crate) user_id: Uuid,
     pub(crate) role: String,
+    pub(crate) status: String,
 }
 
 #[derive(Debug, FromRow)]

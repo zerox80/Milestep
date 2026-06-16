@@ -71,7 +71,7 @@ pub(crate) async fn fetch_bootstrap(
 ) -> Result<BootstrapDto, AppError> {
     let user = fetch_user(db, user_id).await?;
     let membership: MembershipWorkspaceRow = sqlx::query_as(
-        "SELECT workspace_id, user_id, role \
+        "SELECT workspace_id, user_id, role, status \
          FROM memberships WHERE user_id = $1 AND status = 'active' \
          AND ($2::uuid IS NULL OR workspace_id = $2) \
          ORDER BY created_at ASC LIMIT 1",
@@ -171,7 +171,7 @@ pub(crate) async fn fetch_members(
     let rows: Vec<MemberRow> = sqlx::query_as(
         "SELECT m.id, m.user_id, m.workspace_id, u.name, u.email, m.role, m.status, m.last_active_at \
          FROM memberships m JOIN users u ON u.id = m.user_id \
-         WHERE m.workspace_id = $1 ORDER BY u.name",
+         WHERE m.workspace_id = $1 AND m.status = 'active' ORDER BY u.name",
     )
     .bind(workspace_id)
     .fetch_all(db)

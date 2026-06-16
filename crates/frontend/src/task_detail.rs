@@ -20,6 +20,7 @@ pub(crate) fn task_detail(
     let (assignee_edit, set_assignee_edit) =
         create_signal(task.assignee_ids.first().cloned().unwrap_or_default());
     let (recurrence_edit, set_recurrence_edit) = create_signal(task.recurrence);
+    let (recurrence_changed, set_recurrence_changed) = create_signal(false);
     let (busy, set_busy) = create_signal(false);
     let (local_error, set_local_error) = create_signal::<Option<String>>(None);
     let (uploading, set_uploading) = create_signal(false);
@@ -90,6 +91,7 @@ pub(crate) fn task_detail(
             due_date: due_date_edit.get_untracked(),
             phase: phase_edit.get_untracked(),
             recurrence: recurrence_edit.get_untracked(),
+            recurrence_changed: recurrence_changed.get_untracked(),
             assignee_id: assignee_edit.get_untracked(),
             assignee_ids: assignees_for_save.clone(),
         });
@@ -135,6 +137,7 @@ pub(crate) fn task_detail(
     let reset_assignee = task.assignee_ids.first().cloned().unwrap_or_default();
     let reset_assignee_ids = task.assignee_ids.clone();
     let reset_recurrence = task.recurrence;
+    let reset_recurrence_changed = false;
 
     let mention_candidates = move || -> Vec<MemberDto> {
         let value = comment.get();
@@ -261,9 +264,12 @@ pub(crate) fn task_detail(
                         </span>
                         <span>
                             <small>{move || lang.get().tr("Wiederholung", "Repeat")}</small>
-                            <select on:change=move |ev| set_recurrence_edit.set(recurrence_from_value(&select_value(&ev)))>
-                                {recurrence_options(current_recurrence, lang)}
-                            </select>
+                        <select on:change=move |ev| {
+                            set_recurrence_edit.set(recurrence_from_value(&select_value(&ev)));
+                            set_recurrence_changed.set(true);
+                        }>
+                            {recurrence_options(current_recurrence, lang)}
+                        </select>
                         </span>
                     </div>
                 }.into_view()
@@ -300,7 +306,10 @@ pub(crate) fn task_detail(
                         <label class="subtask">
                             {if can_edit {
                                 view! {
-                                    <input type="checkbox" checked=done on:change=move |_| toggle_subtask(task_id.clone(), sub_id.clone(), !done, set_data, set_error)/>
+                                    <input type="checkbox" checked=done on:change=move |ev| {
+                                        let checked = event_target::<web_sys::HtmlInputElement>(&ev).checked();
+                                        toggle_subtask(task_id.clone(), sub_id.clone(), checked, set_data, set_error);
+                                    }/>
                                 }.into_view()
                             } else {
                                 view! { <input type="checkbox" checked=done disabled/> }.into_view()
@@ -430,6 +439,7 @@ pub(crate) fn task_detail(
                             phase: set_phase_edit,
                             assignee: set_assignee_edit,
                             recurrence: set_recurrence_edit,
+                            recurrence_changed: set_recurrence_changed,
                         },
                         TaskEditSnapshot {
                             title: reset_title.clone(),
@@ -439,6 +449,7 @@ pub(crate) fn task_detail(
                             due_date: reset_due.clone(),
                             phase: reset_phase.clone(),
                             recurrence: reset_recurrence,
+                            recurrence_changed: reset_recurrence_changed,
                             assignee_id: reset_assignee.clone(),
                             assignee_ids: reset_assignee_ids.clone(),
                         },

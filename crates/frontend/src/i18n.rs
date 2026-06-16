@@ -283,8 +283,10 @@ pub(crate) fn today_iso() -> String {
 }
 
 pub(crate) fn iso_in_days(days: i64) -> String {
-    let ms = (days as f64).mul_add(86_400_000.0, js_sys::Date::now());
-    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms));
+    // Use calendar date arithmetic so DST transitions do not shift the result
+    // by an hour and produce off-by-one-day defaults.
+    let d = js_sys::Date::new_0();
+    d.set_date((i64::from(d.get_date()) + days) as u32);
     format!(
         "{:04}-{:02}-{:02}",
         d.get_full_year(),
@@ -298,7 +300,10 @@ pub(crate) fn parse_iso(iso: &str) -> Option<(i32, u32, u32)> {
     let y = parts.next()?.parse().ok()?;
     let m: u32 = parts.next()?.parse().ok()?;
     let d: u32 = parts.next()?.parse().ok()?;
-    ((1..=12).contains(&m) && (1..=31).contains(&d)).then_some((y, m, d))
+    if !(1..=12).contains(&m) || d == 0 || d > days_in_month(y, m) {
+        return None;
+    }
+    Some((y, m, d))
 }
 
 pub(crate) fn days_in_month(year: i32, month: u32) -> u32 {

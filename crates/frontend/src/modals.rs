@@ -21,8 +21,10 @@ pub(crate) fn create_task_modal(
     );
     let (assignee_id, set_assignee_id) = create_signal(
         boot.members
-            .first()
+            .iter()
+            .find(|m| m.user_id == boot.current_user.id)
             .map(|m| m.user_id.clone())
+            .or_else(|| boot.members.first().map(|m| m.user_id.clone()))
             .unwrap_or_default(),
     );
     let (recurrence, set_recurrence) = create_signal::<Option<Recurrence>>(None);

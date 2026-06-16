@@ -9,6 +9,7 @@ pub(crate) struct TaskEditSnapshot {
     pub(crate) due_date: String,
     pub(crate) phase: String,
     pub(crate) recurrence: Option<Recurrence>,
+    pub(crate) recurrence_changed: bool,
     pub(crate) assignee_id: String,
     /// Full original assignee list so edits that do not touch the assignee
     /// dropdown do not silently reduce multiple assignees to one.
@@ -25,6 +26,7 @@ pub(crate) struct TaskEditSetters {
     pub(crate) phase: WriteSignal<String>,
     pub(crate) assignee: WriteSignal<String>,
     pub(crate) recurrence: WriteSignal<Option<Recurrence>>,
+    pub(crate) recurrence_changed: WriteSignal<bool>,
 }
 
 pub(crate) fn task_update_payload(edit: TaskEditSnapshot) -> UpdateTaskRequest {
@@ -48,7 +50,7 @@ pub(crate) fn task_update_payload(edit: TaskEditSnapshot) -> UpdateTaskRequest {
         start_date: None,
         due_date: Some((!edit.due_date.trim().is_empty()).then_some(edit.due_date)),
         phase: Some(edit.phase),
-        recurrence: Some(edit.recurrence),
+        recurrence: edit.recurrence_changed.then_some(edit.recurrence),
         assignee_ids: Some(assignee_ids),
     }
 }
@@ -62,4 +64,5 @@ pub(crate) fn reset_task_edit(setters: TaskEditSetters, values: TaskEditSnapshot
     setters.phase.set(values.phase);
     setters.assignee.set(values.assignee_id);
     setters.recurrence.set(values.recurrence);
+    setters.recurrence_changed.set(values.recurrence_changed);
 }

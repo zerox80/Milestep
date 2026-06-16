@@ -9,30 +9,36 @@ pub(crate) async fn update_workspace(
     let (ctx, user_id) = require_user(&state, &headers).await?;
     let workspace_id = uuid_from_str(&id)?;
     assert_workspace_admin(&state.db, user_id, workspace_id).await?;
-    if let Some(name) = payload.name {
+    if let Some(name) = &payload.name {
         if name.trim().is_empty() {
             return Err(AppError::BadRequest("workspace name is required".into()));
         }
-        sqlx::query("UPDATE workspaces SET name = $1 WHERE id = $2")
-            .bind(name.trim())
-            .bind(workspace_id)
-            .execute(&state.db)
-            .await?;
     }
-    if let Some(lang) = payload.default_lang {
+    if let Some(lang) = &payload.default_lang {
         if lang != "de" && lang != "en" {
             return Err(AppError::BadRequest(
                 "default language must be de or en".into(),
             ));
         }
+    }
+
+    let mut tx = state.db.begin().await?;
+    if let Some(name) = payload.name {
+        sqlx::query("UPDATE workspaces SET name = $1 WHERE id = $2")
+            .bind(name.trim())
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(lang) = payload.default_lang {
         sqlx::query("UPDATE workspaces SET default_lang = $1 WHERE id = $2")
             .bind(lang)
             .bind(workspace_id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await?;
     }
     record_audit(
-        &state.db,
+        &mut *tx,
         workspace_id,
         user_id,
         "updated workspace",
@@ -40,6 +46,7 @@ pub(crate) async fn update_workspace(
         Some(workspace_id),
     )
     .await?;
+    tx.commit().await?;
     notify_workspace(&state, &ctx, &headers, workspace_id, "workspace");
     Ok(Json(fetch_workspace(&state.db, workspace_id).await?))
 }
@@ -175,7 +182,7 @@ pub(crate) async fn update_membership(
     // FOR UPDATE serializes concurrent role changes on the same membership and
     // keeps the last-owner check below race-free.
     let row: MembershipWorkspaceRow = sqlx::query_as(
-        "SELECT workspace_id, user_id, role FROM memberships WHERE id = $1 FOR UPDATE",
+        "SELECT workspace_id, user_id, role, status FROM memberships WHERE id = $1 FOR UPDATE",
     )
     .bind(membership_id)
     .fetch_optional(&mut *tx)
@@ -188,11 +195,12 @@ pub(crate) async fn update_membership(
         return Err(AppError::Forbidden);
     }
     let target_role = role_from_db(&row.role)?;
+    let target_active = row.status == "active";
     // Only owners may touch owner memberships or hand out the owner role.
     if (target_role == Role::Owner || payload.role == Role::Owner) && actor_role != Role::Owner {
         return Err(AppError::Forbidden);
     }
-    if target_role == Role::Owner && payload.role != Role::Owner {
+    if target_active && target_role == Role::Owner && payload.role != Role::Owner {
         let owners: Vec<(Uuid,)> = sqlx::query_as(
             "SELECT id FROM memberships \
              WHERE workspace_id = $1 AND role = 'owner' AND status = 'active' FOR UPDATE",
@@ -239,7 +247,7 @@ pub(crate) async fn remove_membership(
     let membership_id = uuid_from_str(&id)?;
     let mut tx = state.db.begin().await?;
     let row: MembershipWorkspaceRow = sqlx::query_as(
-        "SELECT workspace_id, user_id, role FROM memberships WHERE id = $1 FOR UPDATE",
+        "SELECT workspace_id, user_id, role, status FROM memberships WHERE id = $1 FOR UPDATE",
     )
     .bind(membership_id)
     .fetch_optional(&mut *tx)
@@ -252,6 +260,7 @@ pub(crate) async fn remove_membership(
         return Err(AppError::Forbidden);
     }
     let target_role = role_from_db(&row.role)?;
+    let target_active = row.status == "active";
     if target_role == Role::Owner && actor_role != Role::Owner {
         return Err(AppError::Forbidden);
     }
@@ -260,7 +269,7 @@ pub(crate) async fn remove_membership(
             "cannot remove your own membership".into(),
         ));
     }
-    if target_role == Role::Owner {
+    if target_active && target_role == Role::Owner {
         let owners: Vec<(Uuid,)> = sqlx::query_as(
             "SELECT id FROM memberships \
              WHERE workspace_id = $1 AND role = 'owner' AND status = 'active' FOR UPDATE",
