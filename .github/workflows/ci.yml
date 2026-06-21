@@ -27,6 +27,19 @@ jobs:
           done < <(git ls-files '*.rs')
           exit $fail
 
+      # Keep stylesheets reviewable: hard cap of 200 lines.
+      - name: Line-count gate (max 200 lines per .css file)
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            n=$(wc -l < "$f")
+            if [ "$n" -gt 200 ]; then
+              echo "::error file=$f::$f has $n lines (max 200)"
+              fail=1
+            fi
+          done < <(git ls-files '*.css')
+          exit $fail
+
       # Pinned toolchain: nursery lints change between releases and would
       # otherwise break CI on every rustup bump.
       - uses: dtolnay/rust-toolchain@stable
