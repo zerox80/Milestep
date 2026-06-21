@@ -1,0 +1,17 @@
+/* Self-hosted fonts (no Google Fonts CDN: offline-capable and GDPR-safe). */
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/space-grotesk-v22-latin-regular.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/space-grotesk-v22-latin-500.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/space-grotesk-v22-latin-600.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/space-grotesk-v22-latin-700.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-regular.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-500.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-600.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-700.woff2") format("woff2"); }
+@font-face { font-family: "Hanken Grotesk"; font-style: normal; font-weight: 800; font-display: swap; src: url("/fonts/hanken-grotesk-v12-latin-800.woff2") format("woff2"); }
+@font-face { font-family: "Space Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/space-mono-v17-latin-regular.woff2") format("woff2"); }
+@font-face { font-family: "Space Mono"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/space-mono-v17-latin-700.woff2") format("woff2"); }
+/* Plus Jakarta Sans: body font for the PISHI theme (self-hosted, GDPR-safe). */
+@font-face { font-family: "Plus Jakarta Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/plus-jakarta-sans-v8-latin-regular.woff2") format("woff2"); }
+@font-face { font-family: "Plus Jakarta Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/plus-jakarta-sans-v8-latin-500.woff2") format("woff2"); }
+@font-face { font-family: "Plus Jakarta Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/plus-jakarta-sans-v8-latin-600.woff2") format("woff2"); }
+@font-face { font-family: "Plus Jakarta Sans"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/plus-jakarta-sans-v8-latin-700.woff2") format("woff2"); }

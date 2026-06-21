@@ -1,0 +1,105 @@
+:root {
+  --bg: #f7f4ee;
+  --surface: #ffffff;
+  --surface-2: #fbf9f4;
+  --ink: #22201c;
+  --ink-2: #5a554d;
+  --ink-3: #8c867b;
+  --line: #e7e2d8;
+  --line-2: #d8d2c5;
+  --deep: #1c1a16;
+  --accent: #e8613a;
+  --accent-press: #cf4f2c;
+  --accent-soft: #fbe4d9;
+  --cool: #6b8aa6;
+  --good: #5f8d6a;
+  --warm: #c98a3a;
+  --bad: #c0392b;
+  --radius: 10px;
+  --topbar-bg: rgba(247,244,238,.82);
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Hanken Grotesk", system-ui, sans-serif;
+  --font-mono: "Space Mono", ui-monospace, monospace;
+}
+
+/* PISHI theme: remaps the existing custom properties to the colleague's
+   palette (values from PISHI src/styles/theme.css, light mode). Every other
+   rule keeps using these variable names, so only the values change here. */
+:root[data-theme="pishi"] {
+  --bg: #eef1f5;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --ink: #0f172a;
+  --ink-2: #475569;
+  --ink-3: #64748b;
+  --line: #e7eaf0;
+  --line-2: #e3e7ee;
+  --deep: #0a1120;
+  --accent: #0a8fd6;
+  --accent-press: #0876b3;
+  --accent-soft: #eaf6fd;
+  --cool: #38bdf8;
+  --good: #16a34a;
+  --warm: #d97706;
+  --radius: 11px;
+  --topbar-bg: rgba(238,241,245,.82);
+  --font-body: "Plus Jakarta Sans", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, textarea, select { font: inherit; }
+button { border: 0; background: none; color: inherit; cursor: pointer; }
+h1, h2, h3 { font-family: var(--font-display); margin: 0; letter-spacing: 0; line-height: 1.05; }
+p { margin: 0; }
+
+.logo { display: inline-flex; align-items: center; gap: 10px; font: 700 18px var(--font-display); }
+.logo i { display: inline-flex; align-items: end; gap: 2px; width: 22px; height: 22px; }
+.logo b { width: 5px; border-radius: 2px; background: var(--ink); }
+.logo b:nth-child(1) { height: 8px; }
+.logo b:nth-child(2) { height: 14px; }
+.logo b:nth-child(3) { height: 20px; background: var(--accent); }
+.logo-button { padding: 4px 8px 14px; text-align: left; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; border-radius: 9px; font-weight: 700; white-space: nowrap; }
+.btn.primary { background: var(--accent); color: white; box-shadow: 0 8px 22px -12px var(--accent); }
+.btn.ghost { background: rgba(0,0,0,.045); color: var(--ink); }
+.btn.full { width: 100%; }
+.btn:disabled { opacity: .6; cursor: wait; }
+.link-button { color: var(--accent-press); font-weight: 700; }
+.error-line { padding: 10px 12px; border-radius: 9px; background: var(--accent-soft); color: var(--accent-press); font-weight: 700; }
+.danger-icon { flex: none; width: 26px; height: 26px; display: inline-grid; place-items: center; border-radius: 8px; color: var(--accent-press); font-weight: 900; }
+.danger-icon:hover { background: var(--accent-soft); }
+
+.boot-page { min-height: 100vh; display: grid; place-content: center; gap: 14px; justify-items: center; color: var(--ink-2); font-weight: 700; }
+.boot-page .logo { color: var(--ink); }
+
+.auth-page { min-height: 100vh; display: grid; grid-template-columns: 1.25fr .8fr; gap: 40px; padding: 32px; align-items: center; }
+.auth-brand { min-height: calc(100vh - 64px); display: flex; flex-direction: column; justify-content: space-between; padding: 22px 0; }
+.brand-row { display: flex; justify-content: space-between; align-items: center; }
+.eyebrow { color: var(--accent); font: 700 12px var(--font-mono); letter-spacing: .12em; }
+.hero-copy { max-width: 760px; }
+.hero-copy h1 { font-size: clamp(54px, 8vw, 104px); margin: 18px 0; }
+.hero-copy p { font-size: 20px; max-width: 620px; color: var(--ink-2); }
+.hero-actions { display: flex; gap: 12px; margin-top: 30px; }
+.mini-board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: 780px; }
+.mini-col { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 9px; }
+.mini-col.active { background: var(--accent-soft); }
+.mini-col span { color: var(--ink-3); font: 700 12px var(--font-mono); text-transform: uppercase; }
+.mini-col div { background: var(--surface); border-radius: 9px; padding: 12px; font-weight: 700; box-shadow: 0 0 0 1px var(--line); }
+.auth-card { background: var(--surface); border-radius: 16px; padding: 28px; box-shadow: 0 24px 80px -60px rgba(0,0,0,.45), 0 0 0 1px var(--line); display: grid; gap: 16px; }
+.auth-card-head p { color: var(--ink-2); margin-top: 8px; }
+.field { display: grid; gap: 7px; font-weight: 700; color: var(--ink-2); }
+.field input, .auth-card input, .create-modal input, .create-modal textarea, .create-modal select, .comment-box input, .task-drawer input, .task-drawer textarea, .task-drawer select {
+  border: 0; outline: 0; border-radius: 10px; background: var(--surface-2); padding: 11px 12px; box-shadow: inset 0 0 0 1px var(--line);
+}
+.lang-toggle { display: inline-flex; padding: 3px; border-radius: 999px; background: rgba(0,0,0,.055); box-shadow: inset 0 0 0 1px var(--line); }
+.lang-toggle button { padding: 5px 11px; border-radius: 999px; font: 700 12px var(--font-mono); }
+.lang-toggle button.active { background: var(--ink); color: white; }
