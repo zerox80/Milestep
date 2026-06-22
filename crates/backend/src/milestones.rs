@@ -19,20 +19,17 @@ pub(crate) async fn create_milestone(
     let project_id = uuid_from_str(&payload.project_id)?;
     let workspace_id = assert_project_edit(&state.db, user_id, project_id).await?;
 
-    if payload.title.trim().is_empty() {
-        return Err(AppError::BadRequest("milestone title is required".into()));
-    }
+    let title = required_capped(&payload.title, MAX_TITLE_LEN, "milestone title")?;
     let due_date = parse_optional_date(Some(payload.due_date.as_str()))?
         .ok_or_else(|| AppError::BadRequest("milestone due date is required".into()))?;
-    let phase = payload.phase.trim();
-    if phase.is_empty() {
-        return Err(AppError::BadRequest("milestone phase is required".into()));
-    }
+    let phase = required_capped(&payload.phase, MAX_LABEL_LEN, "milestone phase")?;
     let title_en = payload
         .title_en
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .map(|value| capped(value, MAX_TITLE_LEN, "milestone title (en)"))
+        .transpose()?;
 
     let milestone_id = Uuid::new_v4();
     let mut tx = state.db.begin().await?;
@@ -42,12 +39,14 @@ pub(crate) async fn create_milestone(
     )
     .bind(milestone_id)
     .bind(project_id)
-    .bind(payload.title.trim())
+    .bind(title)
     .bind(title_en)
     .bind(due_date)
     .bind(phase)
     .execute(&mut *tx)
     .await?;
+
+    notify_milestone_created(&mut tx, workspace_id, user_id, milestone_id, title).await?;
 
     record_audit(
         &mut *tx,

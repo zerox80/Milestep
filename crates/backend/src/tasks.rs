@@ -30,7 +30,11 @@ pub(crate) async fn create_task(
     let project_id = uuid_from_str(&payload.project_id)?;
     let workspace_id = assert_project_edit(&state.db, user_id, project_id).await?;
 
-    let title = required_trimmed(&payload.title, "task title is required")?;
+    let title = required_capped(&payload.title, MAX_TITLE_LEN, "task title")?;
+    let description = optional_capped(&payload.description, MAX_TEXT_LEN, "task description")?;
+    let tag = optional_capped(&payload.tag, MAX_LABEL_LEN, "task tag")?;
+    let tag_color = optional_capped(&payload.tag_color, MAX_LABEL_LEN, "task tag color")?;
+    let phase = optional_capped(&payload.phase, MAX_LABEL_LEN, "task phase")?;
 
     let status_id = uuid_from_str(&payload.status_id)?;
     assert_status_in_project(&state.db, project_id, status_id).await?;
@@ -48,14 +52,14 @@ pub(crate) async fn create_task(
     .bind(project_id)
     .bind(&key)
     .bind(title)
-    .bind(payload.description.trim())
-    .bind(payload.tag.trim())
-    .bind(payload.tag_color.trim())
+    .bind(description)
+    .bind(tag)
+    .bind(tag_color)
     .bind(priority_to_db(&payload.priority))
     .bind(status_id)
     .bind(parse_optional_date(payload.start_date.as_deref())?)
     .bind(parse_optional_date(payload.due_date.as_deref())?)
-    .bind(payload.phase.trim())
+    .bind(phase)
     .bind(payload.recurrence.map(recurrence_to_db))
     .bind(user_id)
     .execute(&mut *tx)
@@ -63,13 +67,14 @@ pub(crate) async fn create_task(
 
     replace_assignees(&mut tx, task_id, &payload.assignee_ids).await?;
     for (idx, title) in payload.subtasks.iter().enumerate() {
-        if !title.trim().is_empty() {
+        let title = capped(title.trim(), MAX_TITLE_LEN, "subtask title")?;
+        if !title.is_empty() {
             sqlx::query(
                 "INSERT INTO subtasks (id, task_id, title, position) VALUES ($1, $2, $3, $4)",
             )
             .bind(Uuid::new_v4())
             .bind(task_id)
-            .bind(title.trim())
+            .bind(title)
             .bind(idx as i32)
             .execute(&mut *tx)
             .await?;
@@ -102,7 +107,7 @@ pub(crate) async fn update_task(
 
     let mut tx = state.db.begin().await?;
     if let Some(title) = payload.title {
-        let title = required_trimmed(&title, "task title is required")?;
+        let title = required_capped(&title, MAX_TITLE_LEN, "task title")?;
         sqlx::query("UPDATE tasks SET title = $1, updated_at = now() WHERE id = $2")
             .bind(title)
             .bind(task_id)
@@ -111,21 +116,29 @@ pub(crate) async fn update_task(
     }
     if let Some(description) = payload.description {
         sqlx::query("UPDATE tasks SET description = $1, updated_at = now() WHERE id = $2")
-            .bind(description.trim())
+            .bind(optional_capped(
+                &description,
+                MAX_TEXT_LEN,
+                "task description",
+            )?)
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
     }
     if let Some(tag) = payload.tag {
         sqlx::query("UPDATE tasks SET tag = $1, updated_at = now() WHERE id = $2")
-            .bind(tag.trim())
+            .bind(optional_capped(&tag, MAX_LABEL_LEN, "task tag")?)
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
     }
     if let Some(tag_color) = payload.tag_color {
         sqlx::query("UPDATE tasks SET tag_color = $1, updated_at = now() WHERE id = $2")
-            .bind(tag_color.trim())
+            .bind(optional_capped(
+                &tag_color,
+                MAX_LABEL_LEN,
+                "task tag color",
+            )?)
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
@@ -168,7 +181,7 @@ pub(crate) async fn update_task(
     }
     if let Some(phase) = payload.phase {
         sqlx::query("UPDATE tasks SET phase = $1, updated_at = now() WHERE id = $2")
-            .bind(phase.trim())
+            .bind(optional_capped(&phase, MAX_LABEL_LEN, "task phase")?)
             .bind(task_id)
             .execute(&mut *tx)
             .await?;

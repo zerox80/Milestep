@@ -61,6 +61,8 @@ mod attachments;
 mod auth;
 mod config;
 mod convert;
+#[cfg(test)]
+mod db_tests;
 mod error;
 mod middleware;
 mod milestones;

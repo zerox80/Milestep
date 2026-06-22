@@ -21,7 +21,7 @@ Use Rust 2021, `rustfmt`, and the workspace lint policy in `Cargo.toml`. Unsafe 
 
 ## Testing Guidelines
 
-Tests use Rust's built-in `#[test]` framework and are colocated in module test blocks or crate-level `src/tests.rs`. Add focused tests for parsing, date logic, access rules, config, and security-sensitive behavior. Name tests as behavior statements, for example `inline_preview_is_limited_to_safe_types`.
+Tests use Rust's built-in `#[test]` framework and are colocated in module test blocks or crate-level `src/tests.rs`. Add focused tests for parsing, date logic, access rules, config, and security-sensitive behavior. Name tests as behavior statements, for example `inline_preview_is_limited_to_safe_types`. Backend access-control integration tests live in `crates/backend/src/db_tests.rs`; they skip when `DATABASE_URL` is unset and run in CI against an ephemeral Postgres. Point `DATABASE_URL` at a disposable database when running them locally — they write rows and do not clean up.
 
 ## Commit & Pull Request Guidelines
 

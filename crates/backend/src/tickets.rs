@@ -30,7 +30,13 @@ pub(crate) async fn create_ticket(
     let project_id = uuid_from_str(&payload.project_id)?;
     let workspace_id = assert_project_edit(&state.db, user_id, project_id).await?;
 
-    let title = required_trimmed(&payload.title, "ticket title is required")?;
+    let title = required_capped(&payload.title, MAX_TITLE_LEN, "ticket title")?;
+    let description = optional_capped(&payload.description, MAX_TEXT_LEN, "ticket description")?;
+    let requester_name = optional_capped(
+        &payload.requester_name,
+        MAX_LABEL_LEN,
+        "ticket requester name",
+    )?;
 
     let assignee_id = optional_uuid(payload.assignee_id.as_deref())?;
 
@@ -51,10 +57,10 @@ pub(crate) async fn create_ticket(
     .bind(project_id)
     .bind(&key)
     .bind(title)
-    .bind(payload.description.trim())
+    .bind(description)
     .bind(ticket_status_to_db(&payload.status))
     .bind(priority_to_db(&payload.priority))
-    .bind(payload.requester_name.trim())
+    .bind(requester_name)
     .bind(assignee_id)
     .bind(user_id)
     .execute(&mut *tx)
@@ -85,7 +91,7 @@ pub(crate) async fn update_ticket(
     let workspace_id = assert_ticket_edit(&state.db, user_id, ticket_id).await?;
 
     if let Some(title) = &payload.title {
-        required_trimmed(title, "ticket title is required")?;
+        required_capped(title, MAX_TITLE_LEN, "ticket title")?;
     }
 
     let mut tx = state.db.begin().await?;
@@ -98,7 +104,11 @@ pub(crate) async fn update_ticket(
     }
     if let Some(description) = payload.description {
         sqlx::query("UPDATE tickets SET description = $1, updated_at = now() WHERE id = $2")
-            .bind(description.trim())
+            .bind(optional_capped(
+                &description,
+                MAX_TEXT_LEN,
+                "ticket description",
+            )?)
             .bind(ticket_id)
             .execute(&mut *tx)
             .await?;
@@ -119,7 +129,11 @@ pub(crate) async fn update_ticket(
     }
     if let Some(requester_name) = payload.requester_name {
         sqlx::query("UPDATE tickets SET requester_name = $1, updated_at = now() WHERE id = $2")
-            .bind(requester_name.trim())
+            .bind(optional_capped(
+                &requester_name,
+                MAX_LABEL_LEN,
+                "ticket requester name",
+            )?)
             .bind(ticket_id)
             .execute(&mut *tx)
             .await?;

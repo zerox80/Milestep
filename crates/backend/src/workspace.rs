@@ -9,12 +9,12 @@ pub(crate) async fn update_workspace(
     let (ctx, user_id) = require_user(&state, &headers).await?;
     let workspace_id = uuid_from_str(&id)?;
     assert_workspace_admin(&state.db, user_id, workspace_id).await?;
+    // Whether this PATCH touches anything, decided before the fields are moved.
+    let changed = payload.name.is_some() || payload.default_lang.is_some();
     if let Some(name) = payload.name {
-        if name.trim().is_empty() {
-            return Err(AppError::BadRequest("workspace name is required".into()));
-        }
+        let name = required_capped(&name, MAX_LABEL_LEN, "workspace name")?;
         sqlx::query("UPDATE workspaces SET name = $1 WHERE id = $2")
-            .bind(name.trim())
+            .bind(name)
             .bind(workspace_id)
             .execute(&state.db)
             .await?;
@@ -31,16 +31,20 @@ pub(crate) async fn update_workspace(
             .execute(&state.db)
             .await?;
     }
-    record_audit(
-        &state.db,
-        workspace_id,
-        user_id,
-        "updated workspace",
-        "workspace",
-        Some(workspace_id),
-    )
-    .await?;
-    notify_workspace(&state, &ctx, &headers, workspace_id, "workspace");
+    // Skip the audit entry and realtime fan-out for a no-op PATCH so an empty
+    // request body cannot spam the audit log or trigger needless refetches.
+    if changed {
+        record_audit(
+            &state.db,
+            workspace_id,
+            user_id,
+            "updated workspace",
+            "workspace",
+            Some(workspace_id),
+        )
+        .await?;
+        notify_workspace(&state, &ctx, &headers, workspace_id, "workspace");
+    }
     Ok(Json(fetch_workspace(&state.db, workspace_id).await?))
 }
 
@@ -54,7 +58,7 @@ pub(crate) async fn invite_member(
     let workspace_id = uuid_from_str(&id)?;
     assert_workspace_admin(&state.db, user_id, workspace_id).await?;
     let email = payload.email.trim().to_lowercase();
-    if !email.contains('@') {
+    if !email.contains('@') || email.chars().count() > MAX_EMAIL_LEN {
         return Err(AppError::BadRequest("invite email is invalid".into()));
     }
     if matches!(payload.role, Role::Owner) {
@@ -181,7 +185,10 @@ pub(crate) async fn update_membership(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    let actor_role = workspace_role(&state.db, user_id, row.workspace_id)
+    // Read the actor's role inside the same transaction (and after the target
+    // row is locked FOR UPDATE) so authorization and the last-owner check see
+    // one consistent snapshot, even under concurrent role changes.
+    let actor_role = workspace_role(&mut *tx, user_id, row.workspace_id)
         .await?
         .ok_or(AppError::Forbidden)?;
     if !actor_role.can_admin() {
@@ -245,7 +252,9 @@ pub(crate) async fn remove_membership(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    let actor_role = workspace_role(&state.db, user_id, row.workspace_id)
+    // Same consistency reasoning as update_membership: read the actor role in
+    // the transaction so it cannot drift against the locked target row.
+    let actor_role = workspace_role(&mut *tx, user_id, row.workspace_id)
         .await?
         .ok_or(AppError::Forbidden)?;
     if !actor_role.can_admin() {

@@ -191,7 +191,7 @@ pub(crate) async fn assert_user_in_project(
 }
 
 pub(crate) async fn workspace_role(
-    db: &PgPool,
+    exec: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     workspace_id: Uuid,
 ) -> Result<Option<Role>, AppError> {
@@ -199,7 +199,7 @@ pub(crate) async fn workspace_role(
         sqlx::query_as("SELECT role FROM memberships WHERE user_id = $1 AND workspace_id = $2 AND status = 'active'")
             .bind(user_id)
             .bind(workspace_id)
-            .fetch_optional(db)
+            .fetch_optional(exec)
             .await?;
     row.map(|(role,)| role_from_db(&role)).transpose()
 }
@@ -306,12 +306,13 @@ pub(crate) async fn insert_notification(
     kind: &NotificationKind,
     actor_id: Uuid,
     task_id: Option<Uuid>,
+    milestone_id: Option<Uuid>,
     text_de: &str,
     text_en: &str,
 ) -> Result<(), AppError> {
     sqlx::query(
-        "INSERT INTO notifications (id, workspace_id, user_id, kind, actor_id, task_id, text, text_en, unread) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)",
+        "INSERT INTO notifications (id, workspace_id, user_id, kind, actor_id, task_id, milestone_id, text, text_en, unread) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)",
     )
     .bind(Uuid::new_v4())
     .bind(workspace_id)
@@ -319,10 +320,47 @@ pub(crate) async fn insert_notification(
     .bind(notification_kind_to_db(kind))
     .bind(actor_id)
     .bind(task_id)
+    .bind(milestone_id)
     .bind(text_de)
     .bind(text_en)
     .execute(exec)
     .await?;
+    Ok(())
+}
+
+/// Notifies every other active workspace member that a milestone was created.
+/// Mirrors the comment-notification fan-out and is the one place that uses the
+/// `milestone` notification kind and the `milestone_id` column.
+pub(crate) async fn notify_milestone_created(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: Uuid,
+    actor_id: Uuid,
+    milestone_id: Uuid,
+    title: &str,
+) -> Result<(), AppError> {
+    let members: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT user_id FROM memberships WHERE workspace_id = $1 AND status = 'active'",
+    )
+    .bind(workspace_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (target,) in members {
+        if target == actor_id {
+            continue;
+        }
+        insert_notification(
+            &mut **tx,
+            workspace_id,
+            target,
+            &NotificationKind::Milestone,
+            actor_id,
+            None,
+            Some(milestone_id),
+            &format!("hat einen Meilenstein erstellt: {title}"),
+            &format!("created a milestone: {title}"),
+        )
+        .await?;
+    }
     Ok(())
 }
 

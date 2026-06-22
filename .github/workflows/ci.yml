@@ -11,6 +11,24 @@ env:
 jobs:
   lint-test:
     runs-on: ubuntu-latest
+    services:
+      # Backend integration tests (src/db_tests.rs) run against this; they skip
+      # when DATABASE_URL is unset, so it is wired only for the test step below.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: kowobau
+          POSTGRES_DB: kowobau_test
+          # Throwaway DB, network-isolated to this job and destroyed afterwards.
+          # Trust auth keeps any password out of the workflow (no real secret).
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kowobau"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v5
 
@@ -60,6 +78,8 @@ jobs:
         run: cargo clippy -p kowobau-frontend --target wasm32-unknown-unknown -- -D warnings
 
       - name: tests
+        env:
+          DATABASE_URL: postgres://kowobau@localhost:5432/kowobau_test
         run: cargo test --workspace
 
       - name: trunk build + CSP externalizer

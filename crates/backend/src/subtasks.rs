@@ -9,9 +9,7 @@ pub(crate) async fn create_subtask(
     let (ctx, user_id) = require_user(&state, &headers).await?;
     let task_id = uuid_from_str(&id)?;
     let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
-    if payload.title.trim().is_empty() {
-        return Err(AppError::BadRequest("subtask title is required".into()));
-    }
+    let title = required_capped(&payload.title, MAX_TITLE_LEN, "subtask title")?;
     let mut tx = state.db.begin().await?;
     // Serialize position generation per task so concurrent creates cannot
     // assign the same position.
@@ -25,7 +23,7 @@ pub(crate) async fn create_subtask(
     )
     .bind(Uuid::new_v4())
     .bind(task_id)
-    .bind(payload.title.trim())
+    .bind(title)
     .execute(&mut *tx)
     .await?;
     touch_task(&mut *tx, task_id).await?;
@@ -55,9 +53,7 @@ pub(crate) async fn update_subtask(
     let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
 
     if let Some(title) = &payload.title {
-        if title.trim().is_empty() {
-            return Err(AppError::BadRequest("subtask title is required".into()));
-        }
+        required_capped(title, MAX_TITLE_LEN, "subtask title")?;
     }
     let mut tx = state.db.begin().await?;
     let exists: Option<(Uuid,)> =
@@ -143,10 +139,7 @@ pub(crate) async fn create_comment(
     let task_id = uuid_from_str(&id)?;
     // Commenting is intentionally open to viewers; only read access is required.
     let workspace_id = assert_task_read(&state.db, user_id, task_id).await?;
-    if payload.body.trim().is_empty() {
-        return Err(AppError::BadRequest("comment body is required".into()));
-    }
-    let body = payload.body.trim().to_string();
+    let body = required_capped(&payload.body, MAX_COMMENT_LEN, "comment body")?.to_string();
     let mut tx = state.db.begin().await?;
     sqlx::query("INSERT INTO comments (id, task_id, user_id, body) VALUES ($1, $2, $3, $4)")
         .bind(Uuid::new_v4())
@@ -182,6 +175,7 @@ pub(crate) async fn create_comment(
             &NotificationKind::Mention,
             user_id,
             Some(task_id),
+            None,
             &format!("hat dich in {task_key} erwähnt"),
             &format!("mentioned you in {task_key}"),
         )
@@ -212,6 +206,7 @@ pub(crate) async fn create_comment(
             &NotificationKind::Comment,
             user_id,
             Some(task_id),
+            None,
             &format!("hat {task_key} kommentiert"),
             &format!("commented on {task_key}"),
         )

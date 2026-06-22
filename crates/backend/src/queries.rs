@@ -69,7 +69,6 @@ pub(crate) async fn fetch_bootstrap(
     user_id: Uuid,
     workspace_id: Option<Uuid>,
 ) -> Result<BootstrapDto, AppError> {
-    let user = fetch_user(db, user_id).await?;
     let membership: MembershipWorkspaceRow = sqlx::query_as(
         "SELECT workspace_id, user_id, role \
          FROM memberships WHERE user_id = $1 AND status = 'active' \
@@ -81,40 +80,65 @@ pub(crate) async fn fetch_bootstrap(
     .fetch_optional(db)
     .await?
     .ok_or(AppError::Forbidden)?;
+    let workspace_id = membership.workspace_id;
+    let current_role = role_from_db(&membership.role)?;
 
+    // Refresh presence before the member list is read below, so the current
+    // user shows as active "just now" within this same response.
     sqlx::query(
         "UPDATE memberships SET last_active_at = now() WHERE user_id = $1 AND workspace_id = $2",
     )
     .bind(user_id)
-    .bind(membership.workspace_id)
+    .bind(workspace_id)
     .execute(db)
     .await?;
 
-    let workspace = fetch_workspace(db, membership.workspace_id).await?;
+    // The first project is required before any project-scoped read.
     let project_row: ProjectRow = sqlx::query_as(
         "SELECT id, workspace_id, name, key FROM projects WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1",
     )
-    .bind(membership.workspace_id)
+    .bind(workspace_id)
     .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound)?;
     let project: ProjectDto = project_row.into();
     let project_id = uuid_from_str(&project.id)?;
 
-    let statuses = fetch_statuses(db, project_id).await?;
-    let members = fetch_members(db, membership.workspace_id).await?;
-    let tasks = fetch_tasks(db, project_id).await?;
-    let tickets = fetch_tickets(db, project_id).await?;
-    let milestones = fetch_milestones(db, project_id).await?;
-    let notifications = fetch_notifications(db, user_id, membership.workspace_id).await?;
-    let audit_events = fetch_audit_events(db, membership.workspace_id).await?;
-    let current_role = role_from_db(&membership.role)?;
-    let registered_users = if current_role.can_admin() {
-        fetch_registered_users(db, membership.workspace_id).await?
-    } else {
-        Vec::new()
+    // The remaining reads are independent of one another; run them concurrently
+    // instead of issuing eleven sequential round trips. The admin-only
+    // registered-users list resolves to empty for non-admins without a query.
+    let registered_users_fut = async {
+        if current_role.can_admin() {
+            fetch_registered_users(db, workspace_id).await
+        } else {
+            Ok(Vec::new())
+        }
     };
-    let workspaces = fetch_user_workspaces(db, user_id).await?;
+    let (
+        user,
+        workspace,
+        statuses,
+        members,
+        tasks,
+        tickets,
+        milestones,
+        notifications,
+        audit_events,
+        registered_users,
+        workspaces,
+    ) = tokio::try_join!(
+        fetch_user(db, user_id),
+        fetch_workspace(db, workspace_id),
+        fetch_statuses(db, project_id),
+        fetch_members(db, workspace_id),
+        fetch_tasks(db, project_id),
+        fetch_tickets(db, project_id),
+        fetch_milestones(db, project_id),
+        fetch_notifications(db, user_id, workspace_id),
+        fetch_audit_events(db, workspace_id),
+        registered_users_fut,
+        fetch_user_workspaces(db, user_id),
+    )?;
 
     Ok(BootstrapDto {
         current_user: user,

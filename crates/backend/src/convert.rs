@@ -141,16 +141,40 @@ pub(crate) fn optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, AppErro
         .transpose()
 }
 
-pub(crate) fn required_trimmed<'a>(
+/// Rejects free text longer than `max` characters. Returns the input unchanged
+/// so it can be chained where a value is already trimmed/validated.
+pub(crate) fn capped<'a>(value: &'a str, max: usize, field: &str) -> Result<&'a str, AppError> {
+    if value.chars().count() > max {
+        return Err(AppError::BadRequest(format!(
+            "{field} is too long (max {max} characters)"
+        )));
+    }
+    Ok(value)
+}
+
+/// Trims, then enforces both non-emptiness and the length cap for a required
+/// field. The error names the field so the client can point at it.
+pub(crate) fn required_capped<'a>(
     value: &'a str,
-    message: &'static str,
+    max: usize,
+    field: &str,
 ) -> Result<&'a str, AppError> {
     let value = value.trim();
     if value.is_empty() {
-        Err(AppError::BadRequest(message.into()))
-    } else {
-        Ok(value)
+        return Err(AppError::BadRequest(format!("{field} is required")));
     }
+    capped(value, max, field)
+}
+
+/// Trims an optional free-text field and enforces the length cap. Returns the
+/// trimmed value (possibly empty) so callers can bind it directly.
+pub(crate) fn optional_capped<'a>(
+    value: &'a str,
+    max: usize,
+    field: &str,
+) -> Result<&'a str, AppError> {
+    let value = value.trim();
+    capped(value, max, field)
 }
 
 pub(crate) fn fixed_uuid(value: &str) -> Result<Uuid, AppError> {

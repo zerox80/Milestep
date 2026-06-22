@@ -9,15 +9,18 @@ pub(crate) async fn register(
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Response, AppError> {
     let email = payload.email.trim().to_lowercase();
-    if payload.name.trim().len() < 2 {
+    let name = required_capped(&payload.name, MAX_LABEL_LEN, "name")?;
+    if name.chars().count() < 2 {
         return Err(AppError::BadRequest("name is too short".into()));
     }
-    if !email.contains('@') {
+    if !email.contains('@') || email.chars().count() > MAX_EMAIL_LEN {
         return Err(AppError::BadRequest("email is invalid".into()));
     }
-    if payload.password.len() < 8 {
+    // Upper-bound the password too: Argon2 hashes the full input, so an
+    // unbounded passphrase is needless work on every login attempt.
+    if payload.password.len() < 8 || payload.password.len() > 256 {
         return Err(AppError::BadRequest(
-            "password must contain at least 8 characters".into(),
+            "password must contain between 8 and 256 characters".into(),
         ));
     }
 
@@ -76,7 +79,7 @@ pub(crate) async fn register(
         sqlx::query("INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4)")
             .bind(user_id)
             .bind(&email)
-            .bind(payload.name.trim())
+            .bind(name)
             .bind(password_hash)
             .execute(&mut *tx)
             .await;
@@ -88,7 +91,7 @@ pub(crate) async fn register(
     }
 
     let workspace_id = match invite_hash {
-        None => create_workspace_for_user(&mut tx, user_id, payload.name.trim()).await?,
+        None => create_workspace_for_user(&mut tx, user_id, name).await?,
         Some(hash) => {
             let invite: Option<(Uuid, Uuid, String)> = sqlx::query_as(
                 "DELETE FROM workspace_invites \

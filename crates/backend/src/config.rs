@@ -6,6 +6,15 @@ pub(crate) const COOKIE_NAME: &str = "kowobau_session";
 pub(crate) const SECURE_COOKIE_NAME: &str = "__Host-kowobau_session";
 pub(crate) const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 pub(crate) const MAX_JSON_BODY_BYTES: usize = 64 * 1024;
+// Per-field character caps for user free text. The 64 KB JSON body limit only
+// bounds a whole request; without these a single title/description could still
+// be tens of thousands of characters, breaking layout and bloating every
+// bootstrap payload that re-ships it. Counted in characters, not bytes.
+pub(crate) const MAX_TITLE_LEN: usize = 200;
+pub(crate) const MAX_LABEL_LEN: usize = 80;
+pub(crate) const MAX_TEXT_LEN: usize = 10_000;
+pub(crate) const MAX_COMMENT_LEN: usize = 5_000;
+pub(crate) const MAX_EMAIL_LEN: usize = 254;
 pub(crate) const AUTH_RATE_LIMIT_WINDOW: StdDuration = StdDuration::from_mins(1);
 pub(crate) const AUTH_RATE_LIMIT_MAX_ATTEMPTS: u32 = 10;
 pub(crate) const INVITE_TTL_DAYS: i64 = 14;
