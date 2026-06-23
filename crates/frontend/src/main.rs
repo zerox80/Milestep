@@ -116,6 +116,7 @@ pub(crate) fn AppRoot() -> impl IntoView {
     let (data, set_data) = create_signal::<Option<BootstrapDto>>(None);
     let (nav, set_nav) = create_signal(NavView::Overview);
     let (board_mode, set_board_mode) = create_signal("board".to_string());
+    let (search_query, set_search_query) = create_signal(String::new());
     let (open_task, set_open_task) = create_signal::<Option<String>>(None);
     let (open_ticket, set_open_ticket) = create_signal::<Option<String>>(None);
     let (show_create, set_show_create) = create_signal(false);
@@ -181,6 +182,8 @@ pub(crate) fn AppRoot() -> impl IntoView {
                         set_nav,
                         board_mode,
                         set_board_mode,
+                        search_query,
+                        set_search_query,
                         open_task,
                         set_open_task,
                         open_ticket,
@@ -214,6 +217,7 @@ mod i18n;
 mod icons;
 mod modals;
 mod realtime;
+mod search;
 mod settings;
 mod shell;
 mod subtasks_ui;
@@ -237,6 +241,7 @@ pub(crate) use i18n::*;
 pub(crate) use icons::*;
 pub(crate) use modals::*;
 pub(crate) use realtime::*;
+pub(crate) use search::*;
 pub(crate) use settings::*;
 pub(crate) use shell::*;
 pub(crate) use subtasks_ui::*;

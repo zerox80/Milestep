@@ -11,6 +11,7 @@ pub(crate) enum AppIcon {
     Flag,
     Kanban,
     Roadmap,
+    Search,
     Settings,
     Sliders,
     Ticket,
@@ -86,6 +87,12 @@ pub(crate) fn app_icon(icon: AppIcon) -> View {
                 <circle cx="12" cy="15" r="2"></circle>
                 <path d="M17 4v8"></path>
                 <path d="M17 5h4l-1 2 1 2h-4"></path>
+            </svg>
+        }.into_view(),
+        AppIcon::Search => view! {
+            <svg class="app-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="6"></circle>
+                <path d="m16 16 4 4"></path>
             </svg>
         }.into_view(),
         AppIcon::Settings => view! {

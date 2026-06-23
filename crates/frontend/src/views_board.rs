@@ -40,7 +40,8 @@ pub(crate) fn overview_view(
                     .as_deref()
                     .is_some_and(|d| d <= today_str.as_str())
         })
-        .cloned();
+        .cloned()
+        .collect::<Vec<_>>();
     let statuses_for_legend = boot.statuses.clone();
     let tasks_for_legend = boot.tasks.clone();
     let milestones = boot.milestones.clone();
@@ -59,7 +60,16 @@ pub(crate) fn overview_view(
                 <div class="panel">
                     <h3>{move || lang.get().tr("Heute fällig", "Due today")}</h3>
                     <div class="row-list">
-                        {today_tasks.map(|task| task_row(task, boot.members.clone(), lang, set_open_task)).collect_view()}
+                        {if today_tasks.is_empty() {
+                            view! {
+                                <div class="empty-state compact">
+                                    <strong>{move || lang.get().tr("Nichts fällig", "Nothing due")}</strong>
+                                    <span>{move || lang.get().tr("Heute ist frei von überfälligen Aufgaben.", "No due or overdue tasks today.")}</span>
+                                </div>
+                            }.into_view()
+                        } else {
+                            today_tasks.into_iter().map(|task| task_row(task, boot.members.clone(), lang, set_open_task)).collect_view().into_view()
+                        }}
                     </div>
                 </div>
                 <div class="panel">
@@ -127,9 +137,17 @@ pub(crate) fn overview_view(
                 </div>
                 <div class="panel">
                     <h3>{move || lang.get().tr("Aktivität", "Activity")}</h3>
-                    {boot.audit_events.iter().take(6).map(|a| view! {
-                        <div class="activity-row"><span class="avatar tiny">{a.actor_name.as_deref().map_or_else(|| "S".into(), initials)}</span><span>{a.actor_name.clone().unwrap_or_else(|| "System".into())}" · "{a.action.clone()}</span><small>{if lang.get().is_de() { a.created_label_de.clone() } else { a.created_label_en.clone() }}</small></div>
-                    }).collect_view()}
+                    {if boot.audit_events.is_empty() {
+                        view! {
+                            <div class="empty-state compact">
+                                <span>{move || lang.get().tr("Noch keine Aktivität.", "No activity yet.")}</span>
+                            </div>
+                        }.into_view()
+                    } else {
+                        boot.audit_events.iter().take(6).map(|a| view! {
+                            <div class="activity-row"><span class="avatar tiny">{a.actor_name.as_deref().map_or_else(|| "S".into(), initials)}</span><span>{a.actor_name.clone().unwrap_or_else(|| "System".into())}" · "{a.action.clone()}</span><small>{if lang.get().is_de() { a.created_label_de.clone() } else { a.created_label_en.clone() }}</small></div>
+                        }).collect_view().into_view()
+                    }}
                 </div>
             </div>
             {move || if can_edit && show_create_milestone.get() {
@@ -183,7 +201,23 @@ pub(crate) fn board_view(
                                 empty_view()
                             }}
                         </header>
-                        {tasks.into_iter().map(|task| task_card(task, boot.members.clone(), lang, set_open_task, set_drag_task, can_edit)).collect_view()}
+                        {if tasks.is_empty() {
+                            view! {
+                                <div class="board-empty">
+                                    <strong>{move || lang.get().tr("Keine Aufgaben", "No tasks")}</strong>
+                                    <span>{move || lang.get().tr("Ziehe Aufgaben hierher oder erstelle eine neue.", "Drop tasks here or create a new one.")}</span>
+                                    {if can_edit {
+                                        view! {
+                                            <button class="btn ghost" on:click=move |_| set_show_create.set(true)>{move || lang.get().tr("Aufgabe erstellen", "Create task")}</button>
+                                        }.into_view()
+                                    } else {
+                                        empty_view()
+                                    }}
+                                </div>
+                            }.into_view()
+                        } else {
+                            tasks.into_iter().map(|task| task_card(task, boot.members.clone(), lang, set_open_task, set_drag_task, can_edit)).collect_view().into_view()
+                        }}
                     </section>
                 }
             }).collect_view()}
@@ -199,24 +233,33 @@ pub(crate) fn list_view(
     view! {
         <div class="table-panel">
             <div class="table-head"><span>"Aufgabe"</span><span>"Status"</span><span>"Priorität"</span><span>"Fällig"</span><span>"Team"</span></div>
-            {boot.tasks.into_iter().map(|task| {
-                let task_id = task.id.clone();
-                let key = task.key.clone();
-                let title = task_title(&task, lang.get());
-                let status_label = boot.statuses.iter().find(|s| s.id == task.status_id).map(|s| status_name(s, lang.get()).to_string()).unwrap_or_default();
-                let priority = priority_label(&task.priority, lang.get()).to_string();
-                let due = task.due_date.as_deref().map_or_else(|| "-".into(), |d| fmt_date(d, lang.get()));
-                let assignees = task.assignee_ids;
+            {if boot.tasks.is_empty() {
                 view! {
-                    <button class="task-line" on:click=move |_| set_open_task.set(Some(task_id.clone()))>
-                        <span><small>{key}</small><strong>{title}</strong></span>
-                        <span>{status_label}</span>
-                        <span>{priority}</span>
-                        <span>{due}</span>
-                        <span>{assignee_avatars(&assignees, &boot.members)}</span>
-                    </button>
-                }
-            }).collect_view()}
+                    <div class="empty-state">
+                        <strong>{move || lang.get().tr("Noch keine Aufgaben", "No tasks yet")}</strong>
+                        <span>{move || lang.get().tr("Neue Aufgaben erscheinen in dieser Liste.", "New tasks will appear in this list.")}</span>
+                    </div>
+                }.into_view()
+            } else {
+                boot.tasks.into_iter().map(|task| {
+                    let task_id = task.id.clone();
+                    let key = task.key.clone();
+                    let title = task_title(&task, lang.get());
+                    let status_label = boot.statuses.iter().find(|s| s.id == task.status_id).map(|s| status_name(s, lang.get()).to_string()).unwrap_or_default();
+                    let priority = priority_label(&task.priority, lang.get()).to_string();
+                    let due = task.due_date.as_deref().map_or_else(|| "-".into(), |d| fmt_date(d, lang.get()));
+                    let assignees = task.assignee_ids;
+                    view! {
+                        <button class="task-line" on:click=move |_| set_open_task.set(Some(task_id.clone()))>
+                            <span><small>{key}</small><strong>{title}</strong></span>
+                            <span>{status_label}</span>
+                            <span>{priority}</span>
+                            <span>{due}</span>
+                            <span>{assignee_avatars(&assignees, &boot.members)}</span>
+                        </button>
+                    }
+                }).collect_view().into_view()
+            }}
         </div>
     }.into_view()
 }

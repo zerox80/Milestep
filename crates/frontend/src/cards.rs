@@ -14,25 +14,34 @@ pub(crate) fn notifications_panel(
                 <h3>{move || lang.get().tr("Benachrichtigungen", "Notifications")}</h3>
                 <button on:click=move |_| read_all_notifications(set_data, set_error)>{move || lang.get().tr("Alle als gelesen markieren", "Mark all read")}</button>
             </header>
-            {notifications.into_iter().map(|n| {
-                let id = n.id.clone();
-                let unread = n.unread;
-                let actor_initials = n.actor_initials.clone().unwrap_or_else(|| "•".into());
-                let actor_name = n.actor_name.clone().unwrap_or_else(|| "System".into());
-                let text = notif_text(&n, lang.get());
-                let created = if lang.get().is_de() { n.created_label_de.clone() } else { n.created_label_en.clone() };
-                let related_title = n.task_id.as_ref().and_then(|id| tasks.iter().find(|t| &t.id == id)).map(|t| task_title(t, lang.get())).unwrap_or_default();
+            {if notifications.is_empty() {
                 view! {
-                    <button class="notif-row" class:unread=unread on:click=move |_| {
-                        read_notification(id.clone(), set_data, set_error);
-                        set_show_notifications.set(false);
-                    }>
-                        <span class="avatar tiny">{actor_initials}</span>
-                        <span><strong>{actor_name}</strong>" "{text}<em>{related_title}</em><small>{created}</small></span>
-                        {if unread { view! { <b></b> }.into_view() } else { view! { <i></i> }.into_view() }}
-                    </button>
-                }
-            }).collect_view()}
+                    <div class="empty-state compact">
+                        <strong>{move || lang.get().tr("Alles gelesen", "All caught up")}</strong>
+                        <span>{move || lang.get().tr("Neue Hinweise erscheinen hier.", "New updates will appear here.")}</span>
+                    </div>
+                }.into_view()
+            } else {
+                notifications.into_iter().map(|n| {
+                    let id = n.id.clone();
+                    let unread = n.unread;
+                    let actor_initials = n.actor_initials.clone().unwrap_or_else(|| "•".into());
+                    let actor_name = n.actor_name.clone().unwrap_or_else(|| "System".into());
+                    let text = notif_text(&n, lang.get());
+                    let created = if lang.get().is_de() { n.created_label_de.clone() } else { n.created_label_en.clone() };
+                    let related_title = n.task_id.as_ref().and_then(|id| tasks.iter().find(|t| &t.id == id)).map(|t| task_title(t, lang.get())).unwrap_or_default();
+                    view! {
+                        <button class="notif-row" class:unread=unread on:click=move |_| {
+                            read_notification(id.clone(), set_data, set_error);
+                            set_show_notifications.set(false);
+                        }>
+                            <span class="avatar tiny">{actor_initials}</span>
+                            <span><strong>{actor_name}</strong>" "{text}<em>{related_title}</em><small>{created}</small></span>
+                            {if unread { view! { <b></b> }.into_view() } else { view! { <i></i> }.into_view() }}
+                        </button>
+                    }
+                }).collect_view().into_view()
+            }}
         </div>
     }.into_view()
 }

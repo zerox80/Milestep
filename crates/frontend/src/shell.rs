@@ -8,6 +8,8 @@ pub(crate) struct AppSignals {
     pub(crate) set_nav: WriteSignal<NavView>,
     pub(crate) board_mode: ReadSignal<String>,
     pub(crate) set_board_mode: WriteSignal<String>,
+    pub(crate) search_query: ReadSignal<String>,
+    pub(crate) set_search_query: WriteSignal<String>,
     pub(crate) open_task: ReadSignal<Option<String>>,
     pub(crate) set_open_task: WriteSignal<Option<String>>,
     pub(crate) open_ticket: ReadSignal<Option<String>>,
@@ -34,6 +36,8 @@ pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
         set_nav,
         board_mode,
         set_board_mode,
+        search_query,
+        set_search_query,
         open_task,
         set_open_task,
         open_ticket,
@@ -50,17 +54,19 @@ pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
     } = *signals;
     let unread = boot.notifications.iter().filter(|n| n.unread).count();
     let can_edit = boot.current_role.can_edit();
-    let title = header_title(&boot, nav.get(), lang.get());
-    let subtitle = header_subtitle(&boot, nav.get(), lang.get());
     let current_workspace_id = boot.workspace.id.clone();
     let workspaces = boot.workspaces.clone();
+    let boot_for_title = boot.clone();
+    let boot_for_subtitle = boot.clone();
     let boot_for_main = boot.clone();
+    let signals_for_main = *signals;
     let boot_for_open = boot.clone();
     let boot_for_ticket_open = boot.clone();
     let boot_for_notifications = boot.clone();
     let boot_for_create = boot.clone();
     let boot_for_ticket_create = boot.clone();
     let logout_action = move |_| {
+        set_search_query.set(String::new());
         spawn_local(async move {
             let _ = api_empty("/api/auth/logout").await;
             set_data.set(None);
@@ -119,7 +125,22 @@ pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
 
             <main class="main">
                 <header class="topbar">
-                    <div class="search">"⌕" <input placeholder=move || lang.get().tr("Suchen...", "Search...")/></div>
+                    <div class="search" class:active=move || search_is_active(&search_query.get())>
+                        {app_icon(AppIcon::Search)}
+                        <input
+                            aria-label=move || lang.get().tr("Aufgaben und Tickets suchen", "Search tasks and tickets")
+                            placeholder=move || lang.get().tr("Aufgaben und Tickets suchen...", "Search tasks and tickets...")
+                            prop:value=search_query
+                            on:input=move |ev| set_search_query.set(event_target_value(&ev))
+                        />
+                        {move || if search_is_active(&search_query.get()) {
+                            view! {
+                                <button class="search-clear" aria-label=move || lang.get().tr("Suche leeren", "Clear search") on:click=move |_| set_search_query.set(String::new())>"x"</button>
+                            }.into_view()
+                        } else {
+                            empty_view()
+                        }}
+                    </div>
                     <span class="demo-pill">{move || lang.get().tr("Demo-Vorschau", "Demo preview")}</span>
                     <LangToggle lang set_lang/>
                     <span class="notif-wrap">
@@ -158,10 +179,24 @@ pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
 
                 <section class="page-head">
                     <div>
-                        <h1>{title}</h1>
-                        <p>{subtitle}</p>
+                        <h1>{move || {
+                            let query = search_query.get();
+                            if search_is_active(&query) {
+                                lang.get().tr("Suche", "Search").to_string()
+                            } else {
+                                header_title(&boot_for_title, nav.get(), lang.get())
+                            }
+                        }}</h1>
+                        <p>{move || {
+                            let query = search_query.get();
+                            if search_is_active(&query) {
+                                search_subtitle(&boot_for_subtitle, lang.get(), &query)
+                            } else {
+                                header_subtitle(&boot_for_subtitle, nav.get(), lang.get())
+                            }
+                        }}</p>
                     </div>
-                    {move || if nav.get() == NavView::Board {
+                    {move || if nav.get() == NavView::Board && !search_is_active(&search_query.get()) {
                         view! {
                             <div class="segmented">
                                 <button class:active=move || board_mode.get() == "board" on:click=move |_| set_board_mode.set("board".to_string())>"Board"</button>
@@ -174,7 +209,7 @@ pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
                 </section>
 
                 <section class="content">
-                    {main_view(boot_for_main, signals)}
+                    {move || main_view(boot_for_main.clone(), &signals_for_main)}
                 </section>
             </main>
 
@@ -223,6 +258,8 @@ pub(crate) fn main_view(boot: BootstrapDto, signals: &AppSignals) -> View {
         nav,
         set_nav,
         board_mode,
+        search_query,
+        set_search_query,
         set_open_task,
         drag_task,
         set_drag_task,
@@ -233,6 +270,18 @@ pub(crate) fn main_view(boot: BootstrapDto, signals: &AppSignals) -> View {
         set_error,
         ..
     } = *signals;
+
+    let query = search_query.get();
+    if search_is_active(&query) {
+        return search_results_view(
+            boot,
+            lang,
+            set_open_task,
+            set_open_ticket,
+            set_search_query,
+            query,
+        );
+    }
 
     match nav.get() {
         NavView::Overview => overview_view(boot, lang, set_open_task, set_data, set_error),
