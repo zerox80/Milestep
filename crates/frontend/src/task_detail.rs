@@ -26,6 +26,7 @@ pub(crate) fn task_detail(
     let (uploading, set_uploading) = create_signal(false);
     let (mention_open, set_mention_open) = create_signal(false);
     let (mention_index, set_mention_index) = create_signal(0usize);
+    let comment_input = create_node_ref::<html::Textarea>();
     let mention_members = store_value(boot.members.clone());
     let can_edit = boot.current_role.can_edit();
     // Editing or a half-typed comment must not be wiped by a background refetch.
@@ -176,6 +177,13 @@ pub(crate) fn task_detail(
         }
     };
     let submit_comment_for_button = submit_comment.clone();
+
+    create_effect(move |_| {
+        comment.get();
+        if let Some(textarea) = comment_input.get() {
+            fit_textarea_to_content(&textarea);
+        }
+    });
 
     view! {
         <div class="drawer-backdrop" on:click=move |_| set_open_task.set(None)></div>
@@ -345,7 +353,7 @@ pub(crate) fn task_detail(
                                     view! {
                                         <button type="button" class="mention-item" class:active=move || mention_index.get() == i
                                             on:mousedown=move |ev| {
-                                                // Pick before the input loses focus.
+                                                // Pick before the field loses focus.
                                                 ev.prevent_default();
                                                 pick_mention(name.clone());
                                             }>
@@ -358,11 +366,16 @@ pub(crate) fn task_detail(
                             </div>
                         })
                     }}
-                    <input
+                    <textarea
+                        class="comment-input"
+                        rows="1"
+                        _ref=comment_input
                         placeholder=move || lang.get().tr("Kommentar schreiben... (@ erwähnt)", "Write a comment... (@ mentions)")
                         prop:value=comment
                         on:input=move |ev| {
-                            let value = event_target_value(&ev);
+                            let textarea = event_target::<HtmlTextAreaElement>(&ev);
+                            fit_textarea_to_content(&textarea);
+                            let value = textarea.value();
                             set_mention_open.set(mention_query(&value).is_some());
                             set_mention_index.set(0);
                             set_comment.set(value);
@@ -394,11 +407,12 @@ pub(crate) fn task_detail(
                                     "Escape" => set_mention_open.set(false),
                                     _ => {}
                                 }
-                            } else if ev.key() == "Enter" {
+                            } else if ev.key() == "Enter" && !ev.shift_key() {
+                                ev.prevent_default();
                                 submit_comment();
                             }
                         }
-                    />
+                    ></textarea>
                     <button on:click=move |_| submit_comment_for_button()>"Enter"</button>
                 </div>
             </section>
@@ -437,4 +451,10 @@ pub(crate) fn task_detail(
             </section>
         </aside>
     }.into_view()
+}
+
+fn fit_textarea_to_content(textarea: &HtmlTextAreaElement) {
+    let _ = textarea.set_attribute("style", "height: auto;");
+    let height = textarea.scroll_height();
+    let _ = textarea.set_attribute("style", &format!("height: {height}px;"));
 }
