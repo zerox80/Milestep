@@ -112,8 +112,10 @@ pub struct WorkspaceEventDto {
     /// Coarse change category: "task", "ticket", "comment", "attachment",
     /// "workspace" or "resync" (sent when a receiver lagged behind).
     pub topic: String,
-    /// Random per-tab id of the client that caused the change, so that tab
-    /// can skip the refetch for its own (already locally applied) mutations.
+    /// Session-namespaced per-tab id of the client that caused the change
+    /// (`"{session_id}:{tab_id}"`). The server compares it against each
+    /// socket's own namespaced id and skips delivering a tab's echo of its
+    /// (already locally applied) mutations; clients never see their own id.
     pub client_id: Option<String>,
 }
 

@@ -85,6 +85,11 @@ pub(crate) async fn register(
             .await;
     if let Err(err) = inserted {
         if is_unique_violation(&err) {
+            // Deliberate trade-off: this 409 reveals that the address has an
+            // account. Hiding it would require an email round trip ("check
+            // your inbox") which this MVP does not have; login and its timing
+            // stay enumeration-safe (see DUMMY_PASSWORD_HASH), and the auth
+            // rate limit bounds how fast the register endpoint can be probed.
             return Err(AppError::Conflict("email is already registered".into()));
         }
         return Err(err.into());
@@ -144,6 +149,12 @@ pub(crate) async fn login(
     Json(payload): Json<AuthRequest>,
 ) -> Result<Response, AppError> {
     let email = payload.email.trim().to_lowercase();
+    // Registration caps passwords at 256 bytes, so anything longer can never
+    // match; reject it before feeding it to Argon2. The check is independent
+    // of the email, so it leaks nothing about account existence.
+    if payload.password.len() > 256 {
+        return Err(AppError::Unauthorized);
+    }
     let row: Option<UserAuthRow> =
         sqlx::query_as("SELECT id, email, name, password_hash FROM users WHERE email = $1")
             .bind(&email)

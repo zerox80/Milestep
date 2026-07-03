@@ -92,10 +92,11 @@ pub(crate) fn start_realtime(
                 while let Some(Ok(message)) = socket.next().await {
                     backoff_ms = 1_000;
                     if let gloo_net::websocket::Message::Text(text) = message {
-                        if let Ok(event) = serde_json::from_str::<WorkspaceEventDto>(&text) {
-                            if event.client_id.as_deref() == Some(client_id().as_str()) {
-                                continue;
-                            }
+                        // Echo suppression happens server-side: ws_loop skips
+                        // events whose session-namespaced client id matches
+                        // this socket's, so every event arriving here is from
+                        // another tab or user and warrants a refetch.
+                        if serde_json::from_str::<WorkspaceEventDto>(&text).is_ok() {
                             schedule_refetch(data, hold, set_data, set_error);
                         }
                     }

@@ -136,6 +136,12 @@ KOWOBAU_PUBLIC_ORIGIN=https://planner.example.test
   joins the inviting workspace. If the invited email already has an account, it
   is added as a member directly and no token is returned.
 - `POST /api/auth/logout-all` revokes every session of the current user.
+- Sessions are stored hashed (SHA-256 of the cookie token), so a leaked
+  database dump contains no usable sessions.
+- Known trade-off: registering an already-taken email returns a 409, which
+  reveals that the address has an account. Login (including its timing) stays
+  enumeration-safe; closing the register side would need an email round trip,
+  which this MVP does not have.
 
 ## Demo account
 

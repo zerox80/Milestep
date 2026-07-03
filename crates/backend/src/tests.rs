@@ -330,6 +330,20 @@ fn secure_cookie_uses_host_prefix_and_roundtrips() {
 }
 
 #[test]
+fn session_tokens_hash_to_lowercase_hex_matching_migration_009() {
+    let token = Uuid::parse_str("6f1c4f42-1b2a-4c3d-8e5f-000000000001").unwrap();
+    let hash = session_token_hash(token);
+    // Pinned to the output of the migration-009 backfill expression
+    // `encode(sha256(convert_to(id::text, 'UTF8')), 'hex')` for this UUID,
+    // so pre-migration sessions stay valid.
+    assert_eq!(
+        hash,
+        "2689016c2fa94efcb2e43ad014ac8747dc254e6b69e01e884bb3d950af667105"
+    );
+    assert_ne!(session_token_hash(Uuid::new_v4()), hash);
+}
+
+#[test]
 fn invite_tokens_hash_deterministically_and_differ() {
     let a = generate_invite_token();
     let b = generate_invite_token();

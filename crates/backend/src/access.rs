@@ -252,10 +252,10 @@ pub(crate) async fn replace_assignees(
         .bind(task_id)
         .execute(&mut *conn)
         .await?;
-    for user_id in &ids {
-        sqlx::query("INSERT INTO task_assignees (task_id, user_id) VALUES ($1, $2)")
+    if !ids.is_empty() {
+        sqlx::query("INSERT INTO task_assignees (task_id, user_id) SELECT $1, unnest($2::uuid[])")
             .bind(task_id)
-            .bind(user_id)
+            .bind(&ids)
             .execute(&mut *conn)
             .await?;
     }
@@ -328,9 +328,10 @@ pub(crate) async fn insert_notification(
     Ok(())
 }
 
-/// Notifies every other active workspace member that a milestone was created.
-/// Mirrors the comment-notification fan-out and is the one place that uses the
-/// `milestone` notification kind and the `milestone_id` column.
+/// Notifies every other active workspace member that a milestone was created,
+/// as one set-based insert instead of one statement per member. This is the
+/// one place that uses the `milestone` notification kind and the
+/// `milestone_id` column.
 pub(crate) async fn notify_milestone_created(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: Uuid,
@@ -338,29 +339,19 @@ pub(crate) async fn notify_milestone_created(
     milestone_id: Uuid,
     title: &str,
 ) -> Result<(), AppError> {
-    let members: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT user_id FROM memberships WHERE workspace_id = $1 AND status = 'active'",
+    sqlx::query(
+        "INSERT INTO notifications (id, workspace_id, user_id, kind, actor_id, milestone_id, text, text_en, unread) \
+         SELECT gen_random_uuid(), $1, user_id, $2, $3, $4, $5, $6, true \
+         FROM memberships WHERE workspace_id = $1 AND status = 'active' AND user_id <> $3",
     )
     .bind(workspace_id)
-    .fetch_all(&mut **tx)
+    .bind(notification_kind_to_db(&NotificationKind::Milestone))
+    .bind(actor_id)
+    .bind(milestone_id)
+    .bind(format!("hat einen Meilenstein erstellt: {title}"))
+    .bind(format!("created a milestone: {title}"))
+    .execute(&mut **tx)
     .await?;
-    for (target,) in members {
-        if target == actor_id {
-            continue;
-        }
-        insert_notification(
-            &mut **tx,
-            workspace_id,
-            target,
-            &NotificationKind::Milestone,
-            actor_id,
-            None,
-            Some(milestone_id),
-            &format!("hat einen Meilenstein erstellt: {title}"),
-            &format!("created a milestone: {title}"),
-        )
-        .await?;
-    }
     Ok(())
 }
 
