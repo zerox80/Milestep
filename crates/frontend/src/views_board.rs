@@ -54,7 +54,7 @@ pub(crate) fn overview_view(
                 {stat(AppIcon::Kanban, open, lang.get().tr("Offene Aufgaben", "Open tasks"), "cool")}
                 {stat(AppIcon::Clock, today, lang.get().tr("Heute fällig", "Due today"), "accent")}
                 {stat(AppIcon::Flag, overdue, lang.get().tr("Überfällig", "Overdue"), "warm")}
-                {stat(AppIcon::CheckCircle, done, lang.get().tr("Diese Woche fertig", "Done this week"), "good")}
+                {stat(AppIcon::CheckCircle, done, lang.get().tr("Erledigt", "Done"), "good")}
             </div>
             <div class="two-col">
                 <div class="panel">

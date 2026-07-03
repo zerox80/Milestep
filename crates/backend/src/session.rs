@@ -4,17 +4,19 @@ pub(crate) async fn require_auth(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<AuthContext, AppError> {
-    let session_id = parse_session_cookie(headers, &state.cfg)?;
-    let row: Option<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT u.id, u.email, u.name, s.expires_at \
+    let token = parse_session_cookie(headers, &state.cfg)?;
+    // Sessions are looked up by the hash of the cookie token, never by the
+    // token itself: a leaked database dump must not contain usable sessions.
+    let row: Option<(Uuid, Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT s.id, u.id, u.email, u.name, s.expires_at \
          FROM sessions s JOIN users u ON u.id = s.user_id \
-         WHERE s.id = $1 AND s.expires_at > now()",
+         WHERE s.token_hash = $1 AND s.expires_at > now()",
     )
-    .bind(session_id)
+    .bind(session_token_hash(token))
     .fetch_optional(&state.db)
     .await?;
 
-    let Some((id, email, name, expires_at)) = row else {
+    let Some((session_id, id, email, name, expires_at)) = row else {
         return Err(AppError::Unauthorized);
     };
 
@@ -187,6 +189,9 @@ pub(crate) fn verify_password(password: &str, hash: &str) -> Result<(), AppError
         .map_err(|_| AppError::Unauthorized)
 }
 
+/// Creates a session row and returns the random token the cookie carries.
+/// Only the SHA-256 hash of the token is stored (see `session_token_hash`),
+/// so the row id in `AuthContext::session_id` is a separate, non-secret id.
 pub(crate) async fn create_session(
     conn: &mut PgConnection,
     user_id: Uuid,
@@ -195,13 +200,29 @@ pub(crate) async fn create_session(
     sqlx::query("DELETE FROM sessions WHERE expires_at < now()")
         .execute(&mut *conn)
         .await?;
-    let session_id = Uuid::new_v4();
+    let token = Uuid::new_v4();
     let expires_at = Utc::now() + Duration::days(SESSION_TTL_DAYS);
-    sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, $3)")
-        .bind(session_id)
-        .bind(user_id)
-        .bind(expires_at)
-        .execute(&mut *conn)
-        .await?;
-    Ok(session_id)
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .bind(session_token_hash(token))
+    .bind(expires_at)
+    .execute(&mut *conn)
+    .await?;
+    Ok(token)
+}
+
+/// Lowercase-hex SHA-256 of the hyphenated token string. Must stay in sync
+/// with the backfill expression in migration 009 (`encode(sha256(...), 'hex')`)
+/// so sessions issued before the migration keep working.
+pub(crate) fn session_token_hash(token: Uuid) -> String {
+    use std::fmt::Write as _;
+
+    let digest = Sha256::digest(token.to_string().as_bytes());
+    digest.iter().fold(String::with_capacity(64), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
