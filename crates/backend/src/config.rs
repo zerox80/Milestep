@@ -27,6 +27,10 @@ pub(crate) const SESSION_REFRESH_THRESHOLD_DAYS: i64 = 7;
 // cannot pin every core with password hashing.
 pub(crate) const MAX_CONCURRENT_PASSWORD_HASHES: usize = 4;
 pub(crate) const MAX_WORKSPACE_STORAGE_BYTES: i64 = 2 * 1024 * 1024 * 1024;
+// Uploaded file names are length-capped so the on-disk name (uuid prefix plus
+// ".tmp" suffix) always stays well below common 255-byte filesystem limits.
+// Counted in UTF-8 bytes, truncated on a char boundary.
+pub(crate) const MAX_UPLOAD_FILE_NAME_BYTES: usize = 100;
 pub(crate) const ALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
     "pdf", "png", "jpg", "jpeg", "webp", "svg", "csv", "xlsx", "docx", "txt", "json", "zip", "dwg",
     "ifc",

@@ -29,5 +29,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid.workspace = true
 
+[dev-dependencies]
+# oneshot() for the handler-level HTTP tests in src/http_tests.rs.
+tower = { version = "0.5", features = ["util"] }
+
 [lints]
 workspace = true

@@ -9,13 +9,18 @@ pub(crate) const fn role_to_db(role: &Role) -> &'static str {
     }
 }
 
+// The *_from_db parsers only ever see values read back from the database.
+// CHECK constraints keep those columns valid, so an unknown value means the
+// data is corrupt — an internal error (500), not a client mistake (400).
 pub(crate) fn role_from_db(value: &str) -> Result<Role, AppError> {
     match value {
         "owner" => Ok(Role::Owner),
         "admin" => Ok(Role::Admin),
         "member" => Ok(Role::Member),
         "viewer" => Ok(Role::Viewer),
-        _ => Err(AppError::BadRequest(format!("unknown role {value}"))),
+        _ => Err(AppError::Internal(format!(
+            "unknown role in database: {value}"
+        ))),
     }
 }
 
@@ -23,8 +28,8 @@ pub(crate) fn member_status_from_db(value: &str) -> Result<MemberStatus, AppErro
     match value {
         "active" => Ok(MemberStatus::Active),
         "invited" => Ok(MemberStatus::Invited),
-        _ => Err(AppError::BadRequest(format!(
-            "unknown member status {value}"
+        _ => Err(AppError::Internal(format!(
+            "unknown member status in database: {value}"
         ))),
     }
 }
@@ -44,7 +49,9 @@ pub(crate) fn priority_from_db(value: &str) -> Result<Priority, AppError> {
         "high" => Ok(Priority::High),
         "medium" => Ok(Priority::Medium),
         "low" => Ok(Priority::Low),
-        _ => Err(AppError::BadRequest(format!("unknown priority {value}"))),
+        _ => Err(AppError::Internal(format!(
+            "unknown priority in database: {value}"
+        ))),
     }
 }
 
@@ -63,8 +70,8 @@ pub(crate) fn ticket_status_from_db(value: &str) -> Result<TicketStatus, AppErro
         "in_progress" => Ok(TicketStatus::InProgress),
         "resolved" => Ok(TicketStatus::Resolved),
         "closed" => Ok(TicketStatus::Closed),
-        _ => Err(AppError::BadRequest(format!(
-            "unknown ticket status {value}"
+        _ => Err(AppError::Internal(format!(
+            "unknown ticket status in database: {value}"
         ))),
     }
 }
@@ -84,7 +91,9 @@ pub(crate) fn recurrence_from_db(value: &str) -> Result<Recurrence, AppError> {
         "weekly" => Ok(Recurrence::Weekly),
         "biweekly" => Ok(Recurrence::Biweekly),
         "monthly" => Ok(Recurrence::Monthly),
-        _ => Err(AppError::BadRequest(format!("unknown recurrence {value}"))),
+        _ => Err(AppError::Internal(format!(
+            "unknown recurrence in database: {value}"
+        ))),
     }
 }
 
@@ -107,8 +116,8 @@ pub(crate) fn notification_kind_from_db(value: &str) -> Result<NotificationKind,
         "comment" => Ok(NotificationKind::Comment),
         "done" => Ok(NotificationKind::Done),
         "milestone" => Ok(NotificationKind::Milestone),
-        _ => Err(AppError::BadRequest(format!(
-            "unknown notification kind {value}"
+        _ => Err(AppError::Internal(format!(
+            "unknown notification kind in database: {value}"
         ))),
     }
 }
@@ -124,8 +133,8 @@ pub(crate) fn attachment_kind_from_db(value: &str) -> Result<AttachmentKind, App
     match value {
         "file" => Ok(AttachmentKind::File),
         "image" => Ok(AttachmentKind::Image),
-        _ => Err(AppError::BadRequest(format!(
-            "unknown attachment kind {value}"
+        _ => Err(AppError::Internal(format!(
+            "unknown attachment kind in database: {value}"
         ))),
     }
 }

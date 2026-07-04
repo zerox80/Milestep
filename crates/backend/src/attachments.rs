@@ -292,10 +292,12 @@ pub(crate) async fn download_attachment(
     );
     let inline = query.inline.as_deref() == Some("1") && inline_previewable(&file_name);
     let disposition = if inline { "inline" } else { "attachment" };
-    // file_name is sanitized to ASCII [A-Za-z0-9._-] on upload, so this is header-safe.
+    // Sanitized names may contain non-ASCII alphanumerics (umlauts);
+    // content_disposition_value emits an ASCII-safe header value with an
+    // RFC 5987 filename* so browsers restore the real name.
     res.headers_mut().insert(
         CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("{disposition}; filename=\"{file_name}\""))
+        HeaderValue::from_str(&content_disposition_value(disposition, &file_name))
             .map_err(|_| AppError::NotFound)?,
     );
     if inline {
@@ -395,18 +397,83 @@ pub(crate) fn magic_matches(file_name: &str, head: &[u8]) -> bool {
     }
 }
 
+/// Keeps letters and digits (including umlauts and other Unicode), '.', '-'
+/// and '_'; everything else becomes '_'. Only the final path component is
+/// used, so traversal separators can never survive, and the result is
+/// length-capped (see `MAX_UPLOAD_FILE_NAME_BYTES`).
 pub(crate) fn sanitize_file_name(name: &str) -> String {
-    FsPath::new(name)
+    let cleaned: String = FsPath::new(name)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("upload.bin")
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
                 c
             } else {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    if cleaned.len() <= MAX_UPLOAD_FILE_NAME_BYTES {
+        return cleaned;
+    }
+    // Too long: keep the extension (it drives the allowlist and MIME type)
+    // and truncate the stem on a char boundary to fit the byte budget.
+    match cleaned.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.len() + 1 < MAX_UPLOAD_FILE_NAME_BYTES => {
+            let budget = MAX_UPLOAD_FILE_NAME_BYTES - ext.len() - 1;
+            format!("{}.{ext}", truncate_at_char_boundary(stem, budget))
+        }
+        _ => truncate_at_char_boundary(&cleaned, MAX_UPLOAD_FILE_NAME_BYTES).to_string(),
+    }
+}
+
+/// Longest prefix of `value` that fits in `max_bytes` without splitting a char.
+fn truncate_at_char_boundary(value: &str, max_bytes: usize) -> &str {
+    let mut end = 0;
+    for (idx, c) in value.char_indices() {
+        let next = idx + c.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    &value[..end]
+}
+
+/// Builds a Content-Disposition value that survives non-ASCII file names.
+/// ASCII names are quoted directly; anything else gets an ASCII fallback in
+/// `filename` plus the RFC 5987 `filename*` form that browsers prefer, so an
+/// umlaut name like "Bauplan Müller.pdf" downloads under its real name.
+/// Sanitized names contain no quotes or backslashes, so quoting is safe.
+pub(crate) fn content_disposition_value(disposition: &str, file_name: &str) -> String {
+    if file_name.is_ascii() {
+        return format!("{disposition}; filename=\"{file_name}\"");
+    }
+    let fallback: String = file_name
+        .chars()
+        .map(|c| if c.is_ascii() { c } else { '_' })
+        .collect();
+    format!(
+        "{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{}",
+        rfc5987_encode(file_name)
+    )
+}
+
+/// Percent-encodes every byte outside the RFC 5987 attr-char set. Sanitized
+/// names only contain alphanumerics, '.', '-' and '_', all attr-chars when
+/// ASCII, so in practice this encodes exactly the non-ASCII bytes.
+fn rfc5987_encode(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_') {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
 }
