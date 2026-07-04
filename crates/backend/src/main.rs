@@ -64,6 +64,8 @@ mod convert;
 #[cfg(test)]
 mod db_tests;
 mod error;
+#[cfg(test)]
+mod http_tests;
 mod middleware;
 mod milestones;
 mod queries;

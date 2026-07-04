@@ -90,70 +90,76 @@ pub(crate) async fn update_ticket(
     let ticket_id = uuid_from_str(&id)?;
     let workspace_id = assert_ticket_edit(&state.db, user_id, ticket_id).await?;
 
-    if let Some(title) = &payload.title {
-        required_capped(title, MAX_TITLE_LEN, "ticket title")?;
+    // Validate every present field up front so a rejected value never leaves
+    // a half-applied PATCH behind, then write all of them in one UPDATE.
+    let title = payload
+        .title
+        .as_deref()
+        .map(|t| required_capped(t, MAX_TITLE_LEN, "ticket title"))
+        .transpose()?;
+    let description = payload
+        .description
+        .as_deref()
+        .map(|d| optional_capped(d, MAX_TEXT_LEN, "ticket description"))
+        .transpose()?;
+    let requester_name = payload
+        .requester_name
+        .as_deref()
+        .map(|r| optional_capped(r, MAX_LABEL_LEN, "ticket requester name"))
+        .transpose()?;
+    let status = payload.status.as_ref().map(ticket_status_to_db);
+    let priority = payload.priority.as_ref().map(priority_to_db);
+    // Outer Option: field present in the PATCH; inner Option: the new value
+    // (None clears the assignee). See `double_option` in the shared crate.
+    let assignee_id = payload
+        .assignee_id
+        .as_ref()
+        .map(|v| optional_uuid(v.as_deref()))
+        .transpose()?;
+
+    let changed = title.is_some()
+        || description.is_some()
+        || requester_name.is_some()
+        || status.is_some()
+        || priority.is_some()
+        || assignee_id.is_some();
+    // A PATCH without any field is a no-op: skip the write, the audit entry
+    // and the realtime fan-out so an empty body cannot spam either.
+    if !changed {
+        return Ok(Json(fetch_ticket(&state.db, ticket_id).await?));
     }
 
     let mut tx = state.db.begin().await?;
-    if let Some(title) = payload.title {
-        sqlx::query("UPDATE tickets SET title = $1, updated_at = now() WHERE id = $2")
-            .bind(title.trim())
+    if let Some(Some(assignee_id)) = assignee_id {
+        let (project_id,): (Uuid,) = sqlx::query_as("SELECT project_id FROM tickets WHERE id = $1")
             .bind(ticket_id)
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
+        assert_user_in_project(&mut *tx, project_id, assignee_id).await?;
     }
-    if let Some(description) = payload.description {
-        sqlx::query("UPDATE tickets SET description = $1, updated_at = now() WHERE id = $2")
-            .bind(optional_capped(
-                &description,
-                MAX_TEXT_LEN,
-                "ticket description",
-            )?)
-            .bind(ticket_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(status) = payload.status {
-        sqlx::query("UPDATE tickets SET status = $1, updated_at = now() WHERE id = $2")
-            .bind(ticket_status_to_db(&status))
-            .bind(ticket_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(priority) = payload.priority {
-        sqlx::query("UPDATE tickets SET priority = $1, updated_at = now() WHERE id = $2")
-            .bind(priority_to_db(&priority))
-            .bind(ticket_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(requester_name) = payload.requester_name {
-        sqlx::query("UPDATE tickets SET requester_name = $1, updated_at = now() WHERE id = $2")
-            .bind(optional_capped(
-                &requester_name,
-                MAX_LABEL_LEN,
-                "ticket requester name",
-            )?)
-            .bind(ticket_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(assignee_id) = payload.assignee_id {
-        let assignee_id = optional_uuid(assignee_id.as_deref())?;
-        if let Some(assignee_id) = assignee_id {
-            let (project_id,): (Uuid,) =
-                sqlx::query_as("SELECT project_id FROM tickets WHERE id = $1")
-                    .bind(ticket_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-            assert_user_in_project(&mut *tx, project_id, assignee_id).await?;
-        }
-        sqlx::query("UPDATE tickets SET assignee_id = $1, updated_at = now() WHERE id = $2")
-            .bind(assignee_id)
-            .bind(ticket_id)
-            .execute(&mut *tx)
-            .await?;
-    }
+    // COALESCE keeps absent fields untouched; the CASE/flag pair covers the
+    // nullable assignee where "absent" and "clear to NULL" must differ.
+    sqlx::query(
+        "UPDATE tickets SET \
+             title = COALESCE($1, title), \
+             description = COALESCE($2, description), \
+             requester_name = COALESCE($3, requester_name), \
+             status = COALESCE($4, status), \
+             priority = COALESCE($5, priority), \
+             assignee_id = CASE WHEN $6 THEN $7 ELSE assignee_id END, \
+             updated_at = now() \
+         WHERE id = $8",
+    )
+    .bind(title)
+    .bind(description)
+    .bind(requester_name)
+    .bind(status)
+    .bind(priority)
+    .bind(assignee_id.is_some())
+    .bind(assignee_id.flatten())
+    .bind(ticket_id)
+    .execute(&mut *tx)
+    .await?;
 
     record_audit(
         &mut *tx,

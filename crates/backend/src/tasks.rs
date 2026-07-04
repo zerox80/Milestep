@@ -105,96 +105,118 @@ pub(crate) async fn update_task(
     let task_id = uuid_from_str(&id)?;
     let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
 
+    // Validate every present field up front so a rejected value never leaves
+    // a half-applied PATCH behind, then write all of them in one UPDATE.
+    let title = payload
+        .title
+        .as_deref()
+        .map(|t| required_capped(t, MAX_TITLE_LEN, "task title"))
+        .transpose()?;
+    let description = payload
+        .description
+        .as_deref()
+        .map(|d| optional_capped(d, MAX_TEXT_LEN, "task description"))
+        .transpose()?;
+    let tag = payload
+        .tag
+        .as_deref()
+        .map(|t| optional_capped(t, MAX_LABEL_LEN, "task tag"))
+        .transpose()?;
+    let tag_color = payload
+        .tag_color
+        .as_deref()
+        .map(|t| optional_capped(t, MAX_LABEL_LEN, "task tag color"))
+        .transpose()?;
+    let phase = payload
+        .phase
+        .as_deref()
+        .map(|p| optional_capped(p, MAX_LABEL_LEN, "task phase"))
+        .transpose()?;
+    let priority = payload.priority.as_ref().map(priority_to_db);
+    let status_id = payload
+        .status_id
+        .as_deref()
+        .map(uuid_from_str)
+        .transpose()?;
+    // Outer Option: field present in the PATCH; inner Option: the new value
+    // (None clears the column). See `double_option` in the shared crate.
+    let start_date = payload
+        .start_date
+        .as_ref()
+        .map(|v| parse_optional_date(v.as_deref()))
+        .transpose()?;
+    let due_date = payload
+        .due_date
+        .as_ref()
+        .map(|v| parse_optional_date(v.as_deref()))
+        .transpose()?;
+    let recurrence = payload.recurrence.map(|r| r.map(recurrence_to_db));
+
+    let fields_changed = title.is_some()
+        || description.is_some()
+        || tag.is_some()
+        || tag_color.is_some()
+        || phase.is_some()
+        || priority.is_some()
+        || status_id.is_some()
+        || start_date.is_some()
+        || due_date.is_some()
+        || recurrence.is_some();
+    let changed = fields_changed || payload.assignee_ids.is_some();
+    // A PATCH without any field is a no-op: skip the write, the audit entry
+    // and the realtime fan-out so an empty body cannot spam either.
+    if !changed {
+        return Ok(Json(fetch_task(&state.db, task_id).await?));
+    }
+
     let mut tx = state.db.begin().await?;
-    if let Some(title) = payload.title {
-        let title = required_capped(&title, MAX_TITLE_LEN, "task title")?;
-        sqlx::query("UPDATE tasks SET title = $1, updated_at = now() WHERE id = $2")
-            .bind(title)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(description) = payload.description {
-        sqlx::query("UPDATE tasks SET description = $1, updated_at = now() WHERE id = $2")
-            .bind(optional_capped(
-                &description,
-                MAX_TEXT_LEN,
-                "task description",
-            )?)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(tag) = payload.tag {
-        sqlx::query("UPDATE tasks SET tag = $1, updated_at = now() WHERE id = $2")
-            .bind(optional_capped(&tag, MAX_LABEL_LEN, "task tag")?)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(tag_color) = payload.tag_color {
-        sqlx::query("UPDATE tasks SET tag_color = $1, updated_at = now() WHERE id = $2")
-            .bind(optional_capped(
-                &tag_color,
-                MAX_LABEL_LEN,
-                "task tag color",
-            )?)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(priority) = payload.priority {
-        sqlx::query("UPDATE tasks SET priority = $1, updated_at = now() WHERE id = $2")
-            .bind(priority_to_db(&priority))
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    let mut was_done_before_status_change: Option<bool> = None;
-    if let Some(status_id) = payload.status_id {
-        let status_id = uuid_from_str(&status_id)?;
+    let was_done_before_status_change = if let Some(status_id) = status_id {
         let project_id: (Uuid,) = sqlx::query_as("SELECT project_id FROM tasks WHERE id = $1")
             .bind(task_id)
             .fetch_one(&mut *tx)
             .await?;
         assert_status_in_project(&mut *tx, project_id.0, status_id).await?;
-        was_done_before_status_change = Some(task_status_is_done(&mut *tx, task_id).await?);
-        sqlx::query("UPDATE tasks SET status_id = $1, updated_at = now() WHERE id = $2")
-            .bind(status_id)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
+        Some(task_status_is_done(&mut *tx, task_id).await?)
+    } else {
+        None
+    };
+    if fields_changed {
+        // COALESCE keeps absent fields untouched; the CASE/flag pairs are the
+        // nullable columns where "absent" and "clear to NULL" must differ.
+        sqlx::query(
+            "UPDATE tasks SET \
+                 title = COALESCE($1, title), \
+                 description = COALESCE($2, description), \
+                 tag = COALESCE($3, tag), \
+                 tag_color = COALESCE($4, tag_color), \
+                 phase = COALESCE($5, phase), \
+                 priority = COALESCE($6, priority), \
+                 status_id = COALESCE($7, status_id), \
+                 start_date = CASE WHEN $8 THEN $9 ELSE start_date END, \
+                 due_date = CASE WHEN $10 THEN $11 ELSE due_date END, \
+                 recurrence = CASE WHEN $12 THEN $13 ELSE recurrence END, \
+                 updated_at = now() \
+             WHERE id = $14",
+        )
+        .bind(title)
+        .bind(description)
+        .bind(tag)
+        .bind(tag_color)
+        .bind(phase)
+        .bind(priority)
+        .bind(status_id)
+        .bind(start_date.is_some())
+        .bind(start_date.flatten())
+        .bind(due_date.is_some())
+        .bind(due_date.flatten())
+        .bind(recurrence.is_some())
+        .bind(recurrence.flatten())
+        .bind(task_id)
+        .execute(&mut *tx)
+        .await?;
     }
-    if let Some(start_date) = payload.start_date {
-        sqlx::query("UPDATE tasks SET start_date = $1, updated_at = now() WHERE id = $2")
-            .bind(parse_optional_date(start_date.as_deref())?)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(due_date) = payload.due_date {
-        sqlx::query("UPDATE tasks SET due_date = $1, updated_at = now() WHERE id = $2")
-            .bind(parse_optional_date(due_date.as_deref())?)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(phase) = payload.phase {
-        sqlx::query("UPDATE tasks SET phase = $1, updated_at = now() WHERE id = $2")
-            .bind(optional_capped(&phase, MAX_LABEL_LEN, "task phase")?)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(recurrence) = payload.recurrence {
-        sqlx::query("UPDATE tasks SET recurrence = $1, updated_at = now() WHERE id = $2")
-            .bind(recurrence.map(recurrence_to_db))
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    if let Some(assignee_ids) = payload.assignee_ids {
-        replace_assignees(&mut tx, task_id, &assignee_ids).await?;
+    if let Some(assignee_ids) = &payload.assignee_ids {
+        replace_assignees(&mut tx, task_id, assignee_ids).await?;
     }
 
     // After all field updates so a recurrence change in the same PATCH counts.

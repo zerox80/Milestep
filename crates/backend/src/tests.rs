@@ -49,6 +49,44 @@ fn cidr_matching_works() {
 #[test]
 fn file_names_are_sanitized() {
     assert_eq!(sanitize_file_name("../bad name.pdf"), "bad_name.pdf");
+    // Umlauts and other Unicode letters survive; only separators and
+    // header-hostile characters are replaced.
+    assert_eq!(
+        sanitize_file_name("Bauplan Müller.pdf"),
+        "Bauplan_Müller.pdf"
+    );
+    // Quotes and other header-hostile characters are replaced. (No backslash
+    // here: Windows treats it as a path separator, Linux does not, so the
+    // sanitized result would differ per platform.)
+    assert_eq!(sanitize_file_name("a\"b'c.pdf"), "a_b_c.pdf");
+    assert_eq!(sanitize_file_name(""), "upload.bin");
+}
+
+#[test]
+fn overlong_file_names_are_capped_but_keep_their_extension() {
+    let long = format!("{}.pdf", "ü".repeat(200));
+    let sanitized = sanitize_file_name(&long);
+    assert!(sanitized.len() <= MAX_UPLOAD_FILE_NAME_BYTES);
+    assert_eq!(file_extension_lowercase(&sanitized).as_deref(), Some("pdf"));
+    // Truncation lands on a char boundary, so the result is valid UTF-8
+    // consisting only of the original characters.
+    assert!(sanitized.trim_end_matches(".pdf").chars().all(|c| c == 'ü'));
+}
+
+#[test]
+fn content_disposition_survives_umlaut_file_names() {
+    assert_eq!(
+        content_disposition_value("attachment", "plan.pdf"),
+        "attachment; filename=\"plan.pdf\""
+    );
+    let value = content_disposition_value("attachment", "Bauplan_Müller.pdf");
+    // ASCII fallback plus the RFC 5987 form browsers prefer; ü is 0xC3 0xBC.
+    assert_eq!(
+        value,
+        "attachment; filename=\"Bauplan_M_ller.pdf\"; \
+         filename*=UTF-8''Bauplan_M%C3%BCller.pdf"
+    );
+    assert!(value.is_ascii());
 }
 
 #[test]
@@ -127,6 +165,10 @@ fn mentions_match_exact_names_with_boundaries() {
     );
     // No mention syntax, no hits.
     assert!(mentioned_user_ids("mail an anna@example.com", &members).is_empty());
+    // An email-like "@Name" glued to a word is not a mention either.
+    assert!(mentioned_user_ids("schreib an info@Anna", &members).is_empty());
+    // ...but punctuation before the @ still counts.
+    assert_eq!(mentioned_user_ids("(@Anna)", &members), vec![anna]);
     // Duplicates collapse.
     assert_eq!(
         mentioned_user_ids("@Anna und nochmal @Anna", &members),

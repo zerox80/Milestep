@@ -52,35 +52,38 @@ pub(crate) async fn update_subtask(
     let subtask_id = uuid_from_str(&subtask_id)?;
     let workspace_id = assert_task_edit(&state.db, user_id, task_id).await?;
 
-    if let Some(title) = &payload.title {
-        required_capped(title, MAX_TITLE_LEN, "subtask title")?;
-    }
-    let mut tx = state.db.begin().await?;
+    let title = payload
+        .title
+        .as_deref()
+        .map(|t| required_capped(t, MAX_TITLE_LEN, "subtask title"))
+        .transpose()?;
+
     let exists: Option<(Uuid,)> =
         sqlx::query_as("SELECT id FROM subtasks WHERE id = $1 AND task_id = $2")
             .bind(subtask_id)
             .bind(task_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&state.db)
             .await?;
     if exists.is_none() {
         return Err(AppError::NotFound);
     }
-    if let Some(title) = payload.title {
-        sqlx::query("UPDATE subtasks SET title = $1 WHERE id = $2 AND task_id = $3")
-            .bind(title.trim())
-            .bind(subtask_id)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
+    // A PATCH without any field is a no-op: skip the write, the audit entry
+    // and the realtime fan-out so an empty body cannot spam either.
+    if title.is_none() && payload.done.is_none() {
+        return Ok(Json(fetch_task(&state.db, task_id).await?));
     }
-    if let Some(done) = payload.done {
-        sqlx::query("UPDATE subtasks SET done = $1 WHERE id = $2 AND task_id = $3")
-            .bind(done)
-            .bind(subtask_id)
-            .bind(task_id)
-            .execute(&mut *tx)
-            .await?;
-    }
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query(
+        "UPDATE subtasks SET title = COALESCE($1, title), done = COALESCE($2, done) \
+         WHERE id = $3 AND task_id = $4",
+    )
+    .bind(title)
+    .bind(payload.done)
+    .bind(subtask_id)
+    .bind(task_id)
+    .execute(&mut *tx)
+    .await?;
     touch_task(&mut *tx, task_id).await?;
     record_audit(
         &mut *tx,
@@ -228,8 +231,9 @@ pub(crate) async fn create_comment(
 }
 
 /// User ids of members whose exact name appears as "@Name" in `body`,
-/// followed by a non-alphanumeric boundary (or end of input). Matching is
-/// case-sensitive against the canonical member names the autocomplete
+/// bounded by non-alphanumeric characters (or start/end of input) on both
+/// sides — so "info@Anna" in an email-like string is not a mention. Matching
+/// is case-sensitive against the canonical member names the autocomplete
 /// inserts, checked longest-first so "@Anna Schmidt" wins over a member
 /// literally named "Anna".
 pub(crate) fn mentioned_user_ids(body: &str, members: &[(Uuid, String)]) -> Vec<Uuid> {
@@ -247,12 +251,16 @@ pub(crate) fn mentioned_user_ids(body: &str, members: &[(Uuid, String)]) -> Vec<
         let pattern = format!("@{name}");
         for (start, _) in body.match_indices(&pattern) {
             let end = start + pattern.len();
-            let boundary_ok = body[end..]
+            let before_ok = body[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric());
+            let after_ok = body[end..]
                 .chars()
                 .next()
                 .is_none_or(|c| !c.is_alphanumeric());
             let overlaps = claimed.iter().any(|&(s, e)| start < e && end > s);
-            if boundary_ok && !overlaps {
+            if before_ok && after_ok && !overlaps {
                 claimed.push((start, end));
                 if !out.contains(user_id) {
                     out.push(*user_id);
