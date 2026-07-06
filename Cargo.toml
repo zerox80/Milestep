@@ -1,0 +1,51 @@
+[workspace]
+members = [
+  "crates/backend",
+  "crates/frontend",
+  "crates/shared",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["Milestep"]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Deliberate allows:
+module_name_repetitions = "allow" # Dto/Row suffix naming is intentional
+missing_errors_doc = "allow"      # internal application, not a library API
+missing_panics_doc = "allow"
+must_use_candidate = "allow"      # noisy on view-builder/helper functions
+too_many_lines = "allow"          # the file-level 500-line CI gate covers size
+similar_names = "allow"           # task_id/ticket_id pairs are the domain language
+struct_excessive_bools = "allow"  # AppConfig is a flag struct by nature
+wildcard_imports = "allow"        # modules use the crate-root glob re-export pattern
+redundant_pub_crate = "allow"     # nursery; pub(crate) is the deliberate visibility
+                                  # for items re-exported at the crate root
+future_not_send = "allow"         # Leptos signals are deliberately !Send
+option_if_let_else = "allow"      # nursery; map_or_else chains read worse
+cognitive_complexity = "allow"    # nursery; unstable metric
+needless_pass_by_value = "allow"  # Leptos views take owned DTOs/signals by design
+match_same_arms = "allow"         # i18n matches keep one explicit arm per variant
+missing_const_for_fn = "allow"    # nursery; const-ness is no API contract here
+# Values cast in this app are small and bounded (list positions, day offsets,
+# file sizes for labels); try_from chains would only add unwrap noise.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+
+[workspace.dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+uuid = { version = "1.12", features = ["v4", "serde"] }

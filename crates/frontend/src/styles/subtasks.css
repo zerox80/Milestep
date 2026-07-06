@@ -1,0 +1,17 @@
+.subtask-list { display: grid; gap: 4px; margin-top: 8px; }
+.subtask-item { display: grid; }
+.subtask { display: grid; align-items: center; gap: 10px; min-height: 38px; padding: 3px 0; }
+.subtask-row, .subtask-edit-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.subtask-draft-row { grid-template-columns: minmax(0, 1fr) auto; padding-left: 2px; }
+.subtask-title { min-width: 0; color: var(--ink); font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.subtask-actions { display: inline-flex; gap: 4px; justify-content: end; align-items: center; }
+.subtask-action { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; color: var(--ink-3); background: transparent; font: 900 16px var(--font-body); line-height: 1; }
+.subtask-action:hover, .subtask-action:focus-visible { color: var(--ink); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.subtask-action.danger { color: var(--accent-press); }
+.subtask-add { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 8px; margin-top: 10px; align-items: center; }
+.subtask-add input, .subtask-edit-row input[type="text"] { min-width: 0; width: 100%; height: 40px; }
+.subtask-add button { display: grid; place-items: center; width: 40px; height: 40px; min-width: 40px; padding: 0; border-radius: 10px; font-size: 22px; line-height: 1; }
+.subtask-empty { margin: 6px 0 2px; color: var(--ink-3); font-weight: 700; }
+.subtask-error { margin-top: 8px; }
+.task-subtasks-field { margin-bottom: 16px; }
+.task-subtasks-field .subtask-list { margin-top: 0; }

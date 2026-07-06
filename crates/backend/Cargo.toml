@@ -1,0 +1,37 @@
+[package]
+name = "milestep-backend"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+argon2 = { version = "0.5", features = ["std"] }
+axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
+base64 = "0.22"
+milestep-shared = { path = "../shared" }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+futures-util = "0.3"
+hmac = "0.12"
+mime_guess = "2.0"
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+thiserror.workspace = true
+tokio = { version = "1.43", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid.workspace = true
+
+[dev-dependencies]
+# oneshot() for the handler-level HTTP tests in src/http_tests.rs.
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true
