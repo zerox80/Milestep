@@ -1,4 +1,4 @@
-FROM rust:1.95-bookworm AS chef
+FROM rust:1.96-bookworm AS chef
 WORKDIR /app
 # python3 runs the trunk post_build hook (crates/frontend/externalize-init.py).
 RUN apt-get update \
