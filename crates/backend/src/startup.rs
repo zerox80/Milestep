@@ -23,7 +23,7 @@ pub(crate) fn init_tracing() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "kowobau_backend=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "milestep_backend=info,tower_http=info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -31,7 +31,7 @@ pub(crate) fn init_tracing() {
 
 pub(crate) async fn connect_database() -> anyhow::Result<PgPool> {
     let database_url = env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://kowobau:kowobau@localhost:5432/kowobau".to_string());
+        .unwrap_or_else(|_| "postgres://milestep:milestep@localhost:5432/milestep".to_string());
     Ok(PgPoolOptions::new()
         .max_connections(10)
         .acquire_timeout(StdDuration::from_secs(10))
@@ -42,10 +42,10 @@ pub(crate) async fn connect_database() -> anyhow::Result<PgPool> {
 pub(crate) async fn prepare_database(db: &PgPool, cfg: &AppConfig) -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(db).await?;
     if cfg.seed_demo {
-        tracing::info!("KOWOBAU_SEED_DEMO is enabled; seeding demo data on empty database");
+        tracing::info!("MILESTEP_SEED_DEMO is enabled; seeding demo data on empty database");
         seed_demo(db, &cfg.upload_dir).await?;
     } else {
-        tracing::info!("demo seed disabled (set KOWOBAU_SEED_DEMO=true to enable)");
+        tracing::info!("demo seed disabled (set MILESTEP_SEED_DEMO=true to enable)");
         // The demo seed creates accounts with the well-known password
         // "password123"; leftover demo users in a non-demo deployment are an
         // open door and deserve a loud warning on every start.
@@ -57,7 +57,7 @@ pub(crate) async fn prepare_database(db: &PgPool, cfg: &AppConfig) -> anyhow::Re
         if demo_exists {
             tracing::warn!(
                 "SECURITY: demo-seeded accounts with well-known passwords exist in this \
-                 database while KOWOBAU_SEED_DEMO is off; delete the demo users or wipe \
+                 database while MILESTEP_SEED_DEMO is off; delete the demo users or wipe \
                  the database before production use"
             );
         }
@@ -80,7 +80,7 @@ pub(crate) fn build_state(db: PgPool, cfg: AppConfig) -> AppState {
 pub(crate) async fn serve(state: AppState) -> anyhow::Result<()> {
     let app = build_router(state.clone());
     let listener = TcpListener::bind(&state.cfg.bind).await?;
-    tracing::info!("KoWoBau-Planner listening on http://{}", state.cfg.bind);
+    tracing::info!("Milestep listening on http://{}", state.cfg.bind);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

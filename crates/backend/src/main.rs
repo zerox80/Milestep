@@ -32,7 +32,7 @@ pub(crate) use axum::{
 pub(crate) use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 pub(crate) use chrono::{DateTime, Duration, NaiveDate, Utc};
 pub(crate) use hmac::{Hmac, Mac};
-pub(crate) use kowobau_shared::*;
+pub(crate) use milestep_shared::*;
 pub(crate) use rand_core::{OsRng, RngCore};
 pub(crate) use serde::{Deserialize, Serialize};
 pub(crate) use serde_json::json;

@@ -106,7 +106,7 @@ pub(crate) async fn seed_demo(db: &PgPool, upload_dir: &FsPath) -> Result<(), Ap
             .await?;
     }
 
-    sqlx::query("INSERT INTO workspaces (id, name, url_slug, default_lang) VALUES ($1, 'KoWoBau Demo', 'kowobau-demo', 'de')")
+    sqlx::query("INSERT INTO workspaces (id, name, url_slug, default_lang) VALUES ($1, 'Milestep Demo', 'milestep-demo', 'de')")
         .bind(workspace_id)
         .execute(db)
         .await?;
@@ -478,7 +478,7 @@ trailer << /Root 1 0 R >>
             0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
             0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ],
-        Some("json") => br#"{"demo":true,"description":"Seeded KoWoBau attachment"}"#.to_vec(),
+        Some("json") => br#"{"demo":true,"description":"Seeded Milestep attachment"}"#.to_vec(),
         Some("csv") => b"item,status\nAbnahme,offen\nDokumentation,bereit\n".to_vec(),
         _ => format!("Demo attachment: {file_name}\n").into_bytes(),
     }

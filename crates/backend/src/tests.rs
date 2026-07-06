@@ -304,22 +304,22 @@ fn same_origin_compares_against_host_header() {
 #[test]
 fn same_origin_requires_exact_public_origin() {
     let mut cfg = test_config();
-    cfg.public_origin = Some("https://kowobau.example".into());
+    cfg.public_origin = Some("https://milestep.example".into());
     assert!(same_origin(
         &cfg,
-        &origin_headers(Some("https://kowobau.example"), Some("other-host"))
+        &origin_headers(Some("https://milestep.example"), Some("other-host"))
     ));
     assert!(same_origin(
         &cfg,
-        &origin_headers(Some("HTTPS://KOWOBAU.EXAMPLE"), None)
+        &origin_headers(Some("HTTPS://MILESTEP.EXAMPLE"), None)
     ));
     assert!(!same_origin(
         &cfg,
-        &origin_headers(Some("http://kowobau.example"), Some("kowobau.example"))
+        &origin_headers(Some("http://milestep.example"), Some("milestep.example"))
     ));
     assert!(!same_origin(
         &cfg,
-        &origin_headers(Some("https://evil.test"), Some("kowobau.example"))
+        &origin_headers(Some("https://evil.test"), Some("milestep.example"))
     ));
 }
 
@@ -359,7 +359,7 @@ fn secure_cookie_uses_host_prefix_and_roundtrips() {
     cfg.cookie_secure = true;
     let session_id = Uuid::new_v4();
     let cookie = build_cookie(&cfg, session_id).expect("cookie builds");
-    assert!(cookie.starts_with("__Host-kowobau_session="));
+    assert!(cookie.starts_with("__Host-milestep_session="));
     assert!(cookie.contains("; Secure"));
     assert!(cookie.contains("Path=/"));
     assert!(!cookie.contains("Domain="));
@@ -368,7 +368,7 @@ fn secure_cookie_uses_host_prefix_and_roundtrips() {
         parse_session_cookie(&headers, &cfg).expect("cookie parses"),
         session_id
     );
-    assert!(expired_cookie(&cfg).starts_with("__Host-kowobau_session=;"));
+    assert!(expired_cookie(&cfg).starts_with("__Host-milestep_session=;"));
 }
 
 #[test]

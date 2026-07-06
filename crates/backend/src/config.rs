@@ -1,9 +1,9 @@
 use crate::*;
 
-pub(crate) const COOKIE_NAME: &str = "kowobau_session";
+pub(crate) const COOKIE_NAME: &str = "milestep_session";
 // __Host- locks the cookie to the exact host over HTTPS (requires Secure,
 // Path=/ and no Domain attribute, all of which build_cookie guarantees).
-pub(crate) const SECURE_COOKIE_NAME: &str = "__Host-kowobau_session";
+pub(crate) const SECURE_COOKIE_NAME: &str = "__Host-milestep_session";
 pub(crate) const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 pub(crate) const MAX_JSON_BODY_BYTES: usize = 64 * 1024;
 // Per-field character caps for user free text. The 64 KB JSON body limit only
@@ -67,7 +67,7 @@ pub(crate) struct AppConfig {
     // cannot have its rate limiter spoofed via the header.
     pub(crate) trust_proxy: bool,
     pub(crate) trusted_proxies: Vec<IpCidr>,
-    // When set (e.g. "https://kowobau.example.com"), state-changing requests
+    // When set (e.g. "https://milestep.example.com"), state-changing requests
     // must carry exactly this Origin, closing the scheme-blind host check.
     pub(crate) public_origin: Option<String>,
 }
@@ -95,33 +95,33 @@ impl AppConfig {
         let session_secret = session_secret_from_env()?;
 
         Ok(Self {
-            bind: env_or_default("KOWOBAU_BIND", "CADENCE_BIND", "127.0.0.1:8080"),
+            bind: env_or_default("MILESTEP_BIND", "KOWOBAU_BIND", "127.0.0.1:8080"),
             static_dir: env_path_or_default(
+                "MILESTEP_STATIC_DIR",
                 "KOWOBAU_STATIC_DIR",
-                "CADENCE_STATIC_DIR",
                 "crates/frontend/dist",
             ),
             upload_dir: env_path_or_default(
+                "MILESTEP_UPLOAD_DIR",
                 "KOWOBAU_UPLOAD_DIR",
-                "CADENCE_UPLOAD_DIR",
                 "crates/backend/uploads",
             ),
             session_secret,
-            cookie_secure: env_flag("KOWOBAU_COOKIE_SECURE", "CADENCE_COOKIE_SECURE"),
-            seed_demo: env_flag("KOWOBAU_SEED_DEMO", "CADENCE_SEED_DEMO"),
+            cookie_secure: env_flag("MILESTEP_COOKIE_SECURE", "KOWOBAU_COOKIE_SECURE"),
+            seed_demo: env_flag("MILESTEP_SEED_DEMO", "KOWOBAU_SEED_DEMO"),
             registration_enabled: env_var(
+                "MILESTEP_REGISTRATION_ENABLED",
                 "KOWOBAU_REGISTRATION_ENABLED",
-                "CADENCE_REGISTRATION_ENABLED",
             )
             .is_none_or(|v| flag_is_enabled(&v)),
             max_workspace_storage_bytes: env_i64(
+                "MILESTEP_MAX_WORKSPACE_STORAGE_BYTES",
                 "KOWOBAU_MAX_WORKSPACE_STORAGE_BYTES",
-                "CADENCE_MAX_WORKSPACE_STORAGE_BYTES",
             )?
             .unwrap_or(MAX_WORKSPACE_STORAGE_BYTES),
-            trust_proxy: env_flag("KOWOBAU_TRUST_PROXY", "CADENCE_TRUST_PROXY"),
+            trust_proxy: env_flag("MILESTEP_TRUST_PROXY", "KOWOBAU_TRUST_PROXY"),
             trusted_proxies: trusted_proxies_from_env()?,
-            public_origin: env_var("KOWOBAU_PUBLIC_ORIGIN", "CADENCE_PUBLIC_ORIGIN")
+            public_origin: env_var("MILESTEP_PUBLIC_ORIGIN", "KOWOBAU_PUBLIC_ORIGIN")
                 .map(normalize_origin)
                 .filter(|v| !v.is_empty()),
         })
@@ -133,15 +133,15 @@ pub(crate) fn env_var(primary: &str, fallback: &str) -> Option<String> {
 }
 
 fn session_secret_from_env() -> anyhow::Result<String> {
-    let session_secret = env_var("KOWOBAU_SESSION_SECRET", "CADENCE_SESSION_SECRET").ok_or_else(
+    let session_secret = env_var("MILESTEP_SESSION_SECRET", "KOWOBAU_SESSION_SECRET").ok_or_else(
         || {
             anyhow::anyhow!(
-                "KOWOBAU_SESSION_SECRET must be set (generate one with e.g. `openssl rand -base64 48`)"
+                "MILESTEP_SESSION_SECRET must be set (generate one with e.g. `openssl rand -base64 48`)"
             )
         },
     )?;
     if session_secret.len() < 32 {
-        anyhow::bail!("KOWOBAU_SESSION_SECRET must be at least 32 characters long");
+        anyhow::bail!("MILESTEP_SESSION_SECRET must be at least 32 characters long");
     }
     Ok(session_secret)
 }
@@ -177,7 +177,7 @@ fn env_i64(primary: &str, fallback: &str) -> anyhow::Result<Option<i64>> {
 }
 
 fn trusted_proxies_from_env() -> anyhow::Result<Vec<IpCidr>> {
-    match env_var("KOWOBAU_TRUSTED_PROXIES", "CADENCE_TRUSTED_PROXIES") {
+    match env_var("MILESTEP_TRUSTED_PROXIES", "KOWOBAU_TRUSTED_PROXIES") {
         Some(list) => parse_trusted_proxies(&list),
         None => Ok(default_trusted_proxies()),
     }
@@ -189,7 +189,7 @@ fn parse_trusted_proxies(list: &str) -> anyhow::Result<Vec<IpCidr>> {
         .filter(|s| !s.trim().is_empty())
         .map(|s| {
             IpCidr::parse(s).ok_or_else(|| {
-                anyhow::anyhow!("KOWOBAU_TRUSTED_PROXIES contains an invalid CIDR: {s:?}")
+                anyhow::anyhow!("MILESTEP_TRUSTED_PROXIES contains an invalid CIDR: {s:?}")
             })
         })
         .collect()
@@ -203,7 +203,7 @@ pub(crate) fn healthcheck_cli() -> anyhow::Result<()> {
     use std::io::{Read, Write};
 
     let bind =
-        env_var("KOWOBAU_BIND", "CADENCE_BIND").unwrap_or_else(|| "127.0.0.1:8080".to_string());
+        env_var("MILESTEP_BIND", "KOWOBAU_BIND").unwrap_or_else(|| "127.0.0.1:8080".to_string());
     let port = bind
         .rsplit(':')
         .next()

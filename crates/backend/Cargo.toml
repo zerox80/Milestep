@@ -1,5 +1,5 @@
 [package]
-name = "kowobau-backend"
+name = "milestep-backend"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ anyhow.workspace = true
 argon2 = { version = "0.5", features = ["std"] }
 axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 base64 = "0.22"
-kowobau-shared = { path = "../shared" }
+milestep-shared = { path = "../shared" }
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 futures-util = "0.3"

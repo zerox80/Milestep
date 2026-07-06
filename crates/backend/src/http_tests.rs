@@ -5,7 +5,7 @@
 //!
 //! Like `db_tests.rs` they skip gracefully when `DATABASE_URL` is unset and
 //! do not clean up after themselves — point the variable at a disposable
-//! database only (CI uses an ephemeral `kowobau_test`).
+//! database only (CI uses an ephemeral `milestep_test`).
 
 use crate::*;
 use serde::de::DeserializeOwned;
@@ -30,7 +30,7 @@ async fn test_state() -> Option<AppState> {
     let cfg = AppConfig {
         bind: "127.0.0.1:0".into(),
         static_dir: PathBuf::from("."),
-        upload_dir: env::temp_dir().join("kowobau-http-tests"),
+        upload_dir: env::temp_dir().join("milestep-http-tests"),
         session_secret: "http-test-secret-with-at-least-32-chars".into(),
         cookie_secure: false,
         seed_demo: false,
@@ -193,7 +193,7 @@ async fn cross_origin_mutations_are_forbidden() {
     req.headers_mut()
         .insert(ORIGIN, HeaderValue::from_static("https://evil.test"));
     req.headers_mut()
-        .insert(HOST, HeaderValue::from_static("kowobau.test"));
+        .insert(HOST, HeaderValue::from_static("milestep.test"));
     let res = send(&state, req).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }

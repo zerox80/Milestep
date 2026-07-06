@@ -38,11 +38,9 @@ impl Theme {
     pub(crate) fn description(self, lang: Lang) -> &'static str {
         match (self, lang) {
             (Self::Standard, Lang::De) => {
-                "Das Original-Design von KoWoBau-Planner (warmes Beige, Orange)."
+                "Das Original-Design von Milestep (warmes Beige, Orange)."
             }
-            (Self::Standard, Lang::En) => {
-                "The original KoWoBau-Planner design (warm beige, orange)."
-            }
+            (Self::Standard, Lang::En) => "The original Milestep design (warm beige, orange).",
             (Self::Pishi, Lang::De) => {
                 "Helles PISHI-Design (kühles Grau, Blau) – abgestimmt mit dem Team."
             }
@@ -64,7 +62,7 @@ impl Theme {
     pub(crate) const ALL: [Self; 2] = [Self::Standard, Self::Pishi];
 }
 
-const THEME_STORAGE_KEY: &str = "kowobau-theme";
+const THEME_STORAGE_KEY: &str = "milestep-theme";
 
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window().and_then(|w| w.local_storage().ok().flatten())

@@ -2,7 +2,7 @@ use crate::*;
 
 /// CSRF defense-in-depth on top of SameSite=Lax: browser-sent state-changing
 /// requests must come from our own origin. Requests without an Origin header
-/// (curl, server-to-server) are allowed through. With `KOWOBAU_PUBLIC_ORIGIN`
+/// (curl, server-to-server) are allowed through. With `MILESTEP_PUBLIC_ORIGIN`
 /// set, the full origin (including scheme) must match exactly; otherwise we
 /// fall back to comparing the Origin host against the Host header.
 pub(crate) async fn enforce_same_origin(
@@ -20,7 +20,7 @@ pub(crate) async fn enforce_same_origin(
 
 /// True when the request's Origin header (if present) matches our own origin.
 /// Requests without an Origin header (curl, server-to-server) pass. With
-/// `KOWOBAU_PUBLIC_ORIGIN` set, the full origin (including scheme) must match
+/// `MILESTEP_PUBLIC_ORIGIN` set, the full origin (including scheme) must match
 /// exactly; otherwise the Origin host is compared against the Host header.
 pub(crate) fn same_origin(cfg: &AppConfig, headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(ORIGIN).and_then(|v| v.to_str().ok()) else {

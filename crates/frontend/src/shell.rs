@@ -388,7 +388,7 @@ pub(crate) fn logo() -> View {
     view! {
         <span class="logo">
             <i><b></b><b></b><b></b></i>
-            <span>"KoWoBau-Planner"</span>
+            <span>"Milestep"</span>
         </span>
     }
     .into_view()

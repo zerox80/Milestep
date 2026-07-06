@@ -6,7 +6,7 @@
 //! without a database); CI provides a Postgres service and runs them for real.
 //!
 //! The tests insert rows and do not clean up, so point `DATABASE_URL` at a
-//! disposable database (CI uses an ephemeral `kowobau_test`), never a real one.
+//! disposable database (CI uses an ephemeral `milestep_test`), never a real one.
 
 use crate::*;
 

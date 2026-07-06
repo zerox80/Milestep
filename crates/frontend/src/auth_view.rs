@@ -89,7 +89,7 @@ pub(crate) fn auth_shell(
                 </div>
                 <div class="hero-copy">
                     <span class="eyebrow">"OPEN SOURCE · RUST · WASM"</span>
-                    <h1>"KoWoBau-Planner"</h1>
+                    <h1>"Milestep"</h1>
                     <p>{move || if lang.get().is_de() {
                         "Projektmanagement für Bau- und Modernisierungsteams: Aufgaben, Termine, Meilensteine und Teamverantwortung in einem schnellen Self-Hosting-Tool."
                     } else {

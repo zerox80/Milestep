@@ -2,17 +2,17 @@
 
 ## Project Structure & Module Organization
 
-KoWoBau-Planner is a Rust workspace with three crates under `crates/`. `crates/backend` contains the Axum API, PostgreSQL access, WebSockets, migrations in `migrations/`, and upload storage placeholder in `uploads/`. `crates/frontend` contains the Leptos CSR app, Trunk entry files, UI modules in `src/`, CSS in `src/styles.css`, and fonts in `assets/fonts/`. `crates/shared` holds Serde DTOs shared by backend and frontend. Deployment examples live in `deploy/nginx/`.
+Milestep is a Rust workspace with three crates under `crates/`. `crates/backend` contains the Axum API, PostgreSQL access, WebSockets, migrations in `migrations/`, and upload storage placeholder in `uploads/`. `crates/frontend` contains the Leptos CSR app, Trunk entry files, UI modules in `src/`, CSS in `src/styles.css`, and fonts in `assets/fonts/`. `crates/shared` holds Serde DTOs shared by backend and frontend. Deployment examples live in `deploy/nginx/`.
 
 ## Build, Test, and Development Commands
 
 - `cargo fmt --all`: format all crates.
 - `cargo check --workspace`: type-check the workspace.
 - `cargo clippy --workspace --all-targets -- -D warnings`: run native lint checks with warnings denied.
-- `cargo clippy -p kowobau-frontend --target wasm32-unknown-unknown -- -D warnings`: lint the WASM frontend target.
+- `cargo clippy -p milestep-frontend --target wasm32-unknown-unknown -- -D warnings`: lint the WASM frontend target.
 - `cargo test --workspace`: run all Rust tests.
 - `cd crates/frontend; trunk build --release --public-url /; py externalize-init.py dist`: build the frontend and move Trunk's inline bootstrap into `init.js` for CSP compliance.
-- `cargo build --release -p kowobau-backend`: build the backend binary.
+- `cargo build --release -p milestep-backend`: build the backend binary.
 - `docker compose up --build`: run the full stack after creating `.env` from `.env.example`.
 
 ## Coding Style & Naming Conventions
@@ -29,4 +29,4 @@ Recent commits use short imperative summaries, often scoped by feature or refact
 
 ## Security & Configuration Tips
 
-Never commit real secrets. Copy `.env.example` to `.env` and set `KOWOBAU_SESSION_SECRET` to at least 32 characters plus `POSTGRES_PASSWORD`. Do not enable `KOWOBAU_SEED_DEMO=true` in production. Only set `KOWOBAU_TRUST_PROXY=true` behind a trusted proxy, and set `KOWOBAU_PUBLIC_ORIGIN` plus secure cookies for production.
+Never commit real secrets. Copy `.env.example` to `.env` and set `MILESTEP_SESSION_SECRET` to at least 32 characters plus `POSTGRES_PASSWORD`. Do not enable `MILESTEP_SEED_DEMO=true` in production. Only set `MILESTEP_TRUST_PROXY=true` behind a trusted proxy, and set `MILESTEP_PUBLIC_ORIGIN` plus secure cookies for production.

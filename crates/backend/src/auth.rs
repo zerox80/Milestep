@@ -1,7 +1,7 @@
 use crate::*;
 
 pub(crate) async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "service": "kowobau-planner" }))
+    Json(json!({ "ok": true, "service": "milestep-planner" }))
 }
 
 pub(crate) async fn register(
@@ -65,7 +65,7 @@ pub(crate) async fn register(
     // through on an empty database. Re-check under a transaction-level advisory
     // lock so at most one such registration can succeed.
     if invite_hash.is_none() && !state.cfg.registration_enabled {
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('kowobau:registration'))")
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('milestep:registration'))")
             .execute(&mut *tx)
             .await?;
         let (user_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")

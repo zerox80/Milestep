@@ -16,13 +16,13 @@ RUN cargo chef prepare --recipe-path recipe.json
 # the cached dependency layers instead of rebuilding everything.
 FROM chef AS backend-builder
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release -p kowobau-backend --recipe-path recipe.json
+RUN cargo chef cook --release -p milestep-backend --recipe-path recipe.json
 COPY . .
-RUN cargo build --release -p kowobau-backend
+RUN cargo build --release -p milestep-backend
 
 FROM chef AS frontend-builder
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --target wasm32-unknown-unknown -p kowobau-frontend --recipe-path recipe.json
+RUN cargo chef cook --release --target wasm32-unknown-unknown -p milestep-frontend --recipe-path recipe.json
 COPY . .
 WORKDIR /app/crates/frontend
 # externalize-init.py moves trunk's inline bootstrap into /init.js so the CSP
@@ -38,14 +38,14 @@ RUN apt-get update \
   && useradd --system --uid 10001 --user-group --no-create-home app \
   && mkdir -p /app/uploads \
   && chown app:app /app/uploads
-COPY --from=backend-builder /app/target/release/kowobau-backend /usr/local/bin/kowobau-backend
+COPY --from=backend-builder /app/target/release/milestep-backend /usr/local/bin/milestep-backend
 COPY crates/backend/migrations /app/migrations
-ENV KOWOBAU_BIND=0.0.0.0:8080
-ENV KOWOBAU_UPLOAD_DIR=/app/uploads
+ENV MILESTEP_BIND=0.0.0.0:8080
+ENV MILESTEP_UPLOAD_DIR=/app/uploads
 VOLUME ["/app/uploads"]
 EXPOSE 8080
 USER app
-CMD ["kowobau-backend"]
+CMD ["milestep-backend"]
 
 FROM nginx:1.29-alpine AS nginx-runtime
 COPY deploy/nginx/docker.conf /etc/nginx/conf.d/default.conf

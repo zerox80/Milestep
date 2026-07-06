@@ -1,7 +1,7 @@
 pub(crate) use gloo_net::http::Request;
-pub(crate) use kowobau_shared::*;
 pub(crate) use leptos::*;
 pub(crate) use leptos_router::*;
+pub(crate) use milestep_shared::*;
 pub(crate) use serde::{de::DeserializeOwned, Serialize};
 pub(crate) use wasm_bindgen_futures::spawn_local;
 pub(crate) use web_sys::{DragEvent, HtmlSelectElement, HtmlTextAreaElement, RequestCredentials};
@@ -76,7 +76,7 @@ fn boot_splash() -> View {
     view! {
         <main class="boot-page" aria-busy="true">
             {logo()}
-            <span>"KoWoBau-Planner wird geladen..."</span>
+            <span>"Milestep wird geladen..."</span>
         </main>
     }
     .into_view()
