@@ -47,7 +47,7 @@ EXPOSE 8080
 USER app
 CMD ["milestep-backend"]
 
-FROM nginx:1.29-alpine AS nginx-runtime
+FROM nginx:1.31-alpine AS nginx-runtime
 COPY deploy/nginx/docker.conf /etc/nginx/conf.d/default.conf
 COPY --from=frontend-builder /app/crates/frontend/dist /usr/share/nginx/html
 EXPOSE 80
