@@ -329,7 +329,9 @@ pub(crate) async fn fetch_tasks(db: &PgPool, project_id: Uuid) -> Result<Vec<Tas
     .bind(project_id)
     .fetch_all(db)
     .await?;
-    assemble_tasks(db, rows).await
+    // Collection responses carry everything needed by board/list/calendar,
+    // but leave unbounded comment and attachment histories to the detail API.
+    assemble_tasks(db, rows, false).await
 }
 
 pub(crate) async fn fetch_task(db: &PgPool, task_id: Uuid) -> Result<TaskDto, AppError> {
@@ -338,7 +340,7 @@ pub(crate) async fn fetch_task(db: &PgPool, task_id: Uuid) -> Result<TaskDto, Ap
         .fetch_optional(db)
         .await?
         .ok_or(AppError::NotFound)?;
-    assemble_tasks(db, vec![row])
+    assemble_tasks(db, vec![row], true)
         .await?
         .pop()
         .ok_or(AppError::NotFound)

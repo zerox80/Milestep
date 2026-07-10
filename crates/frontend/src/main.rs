@@ -131,6 +131,41 @@ pub(crate) fn AppRoot() -> impl IntoView {
     let realtime_hold = create_rw_signal(0i32);
     provide_context(RealtimeHold(realtime_hold));
 
+    // Bootstrap task rows deliberately omit comment/attachment history. Load
+    // it only for the selected task and merge it into the local bootstrap.
+    let detail_loading = store_value::<Option<String>>(None);
+    create_effect(move |_| {
+        let Some(task_id) = open_task.get() else {
+            return;
+        };
+        let needs_details = data
+            .get()
+            .as_ref()
+            .and_then(|boot| boot.tasks.iter().find(|task| task.id == task_id))
+            .is_some_and(|task| !task.details_loaded);
+        if !needs_details || detail_loading.get_value().as_deref() == Some(task_id.as_str()) {
+            return;
+        }
+        detail_loading.set_value(Some(task_id.clone()));
+        spawn_local(async move {
+            match api_get::<TaskDto>(&format!("/api/tasks/{task_id}")).await {
+                Ok(task) if open_task.get_untracked().as_deref() == Some(task_id.as_str()) => {
+                    replace_task(set_data, task);
+                    set_error.set(None);
+                }
+                Ok(_) => {}
+                Err(err) if err.status == 401 => {
+                    set_data.set(None);
+                    set_error.set(None);
+                }
+                Err(err) => set_error.set(Some(err.message)),
+            }
+            if detail_loading.get_value().as_deref() == Some(task_id.as_str()) {
+                detail_loading.set_value(None);
+            }
+        });
+    });
+
     let reload = move || {
         set_loading.set(true);
         spawn_local(async move {
@@ -163,10 +198,24 @@ pub(crate) fn AppRoot() -> impl IntoView {
     // on logout (data becomes None) and is restarted here after the next
     // successful bootstrap.
     let realtime_running = store_value(false);
+    let realtime_epoch = create_rw_signal(0u64);
     create_effect(move |_| {
         if data.get().is_some() && !realtime_running.get_value() {
             realtime_running.set_value(true);
-            start_realtime(data, realtime_hold, realtime_running, set_data, set_error);
+            start_realtime(
+                data,
+                realtime_hold,
+                realtime_running,
+                realtime_epoch,
+                realtime_epoch.get_untracked(),
+                set_data,
+                set_error,
+            );
+        } else if data.get().is_none() && realtime_running.get_value() {
+            // Invalidates the current socket immediately. Its async loop sees
+            // the epoch change within one cancellation tick and drops it.
+            realtime_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+            realtime_running.set_value(false);
         }
     });
 

@@ -143,7 +143,17 @@ pub(crate) async fn ws_handler(
         .client_id
         .filter(|v| !v.is_empty() && v.len() <= 64)
         .map(|v| format!("{}:{v}", ctx.session_id));
-    Ok(ws.on_upgrade(move |socket| ws_loop(socket, state, workspace_id, client_id, guard)))
+    Ok(ws.on_upgrade(move |socket| {
+        ws_loop(
+            socket,
+            state,
+            workspace_id,
+            user_id,
+            ctx.session_id,
+            client_id,
+            guard,
+        )
+    }))
 }
 
 /// Releases this connection's per-user socket slot when dropped, so the count
@@ -169,6 +179,8 @@ pub(crate) async fn ws_loop(
     socket: WebSocket,
     state: AppState,
     workspace_id: Uuid,
+    user_id: Uuid,
+    session_id: Uuid,
     client_id: Option<String>,
     // Held for the lifetime of the connection; releases the per-user slot on drop.
     _guard: WsConnGuard,
@@ -186,6 +198,17 @@ pub(crate) async fn ws_loop(
     loop {
         tokio::select! {
             _ = ping.tick() => {
+                // WebSockets outlive their HTTP handshake. Revalidate both
+                // the session and workspace membership so logout-all, expiry,
+                // or member removal revokes an already-open connection too.
+                match realtime_access_valid(&state.db, session_id, user_id, workspace_id).await {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(err) => {
+                        tracing::warn!(%err, %user_id, %workspace_id, "realtime access revalidation failed");
+                        break;
+                    }
+                }
                 if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
                     break;
                 }
@@ -226,4 +249,26 @@ pub(crate) async fn ws_loop(
             }
         }
     }
+}
+
+pub(crate) async fn realtime_access_valid(
+    db: &PgPool,
+    session_id: Uuid,
+    user_id: Uuid,
+    workspace_id: Uuid,
+) -> Result<bool, AppError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS( \
+             SELECT 1 FROM sessions s \
+             JOIN memberships m ON m.user_id = s.user_id \
+             WHERE s.id = $1 AND s.user_id = $2 AND s.expires_at > now() \
+               AND m.workspace_id = $3 AND m.status = 'active' \
+         )",
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .bind(workspace_id)
+    .fetch_one(db)
+    .await
+    .map_err(AppError::from)
 }

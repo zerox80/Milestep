@@ -235,6 +235,7 @@ async fn empty_task_patch_is_a_noop_and_dates_clear_via_null() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
     let task: TaskDto = body_json(res).await;
+    assert!(task.details_loaded);
     let task_uri = format!("/api/tasks/{}", task.id);
     let before = audit_count(&state.db, workspace_id).await;
 
@@ -281,6 +282,51 @@ async fn empty_task_patch_is_a_noop_and_dates_clear_via_null() {
     let cleared: TaskDto = body_json(res).await;
     assert_eq!(cleared.due_date, None);
     assert_eq!(audit_count(&state.db, workspace_id).await, before + 2);
+
+    let res = send(&state, get_request("/api/bootstrap", Some(&cookie))).await;
+    let summary: BootstrapDto = body_json(res).await;
+    assert!(!summary.tasks[0].details_loaded);
+
+    let res = send(&state, get_request(&task_uri, Some(&cookie))).await;
+    let detail: TaskDto = body_json(res).await;
+    assert!(detail.details_loaded);
+}
+
+#[tokio::test]
+async fn logout_revokes_existing_realtime_access() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let (cookie, _) = register_user(&state).await;
+    let res = send(&state, get_request("/api/bootstrap", Some(&cookie))).await;
+    let boot: BootstrapDto = body_json(res).await;
+    let user_id = uuid_from_str(&boot.current_user.id).expect("user id");
+    let workspace_id = uuid_from_str(&boot.workspace.id).expect("workspace id");
+    let (session_id,): (Uuid,) = sqlx::query_as(
+        "SELECT id FROM sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await
+    .expect("session row");
+
+    assert!(
+        realtime_access_valid(&state.db, session_id, user_id, workspace_id)
+            .await
+            .expect("realtime access check")
+    );
+
+    let res = send(
+        &state,
+        json_request(Method::POST, "/api/auth/logout", &json!({}), Some(&cookie)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    assert!(
+        !realtime_access_valid(&state.db, session_id, user_id, workspace_id)
+            .await
+            .expect("realtime access check")
+    );
 }
 
 #[tokio::test]

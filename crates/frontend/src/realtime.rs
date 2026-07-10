@@ -37,6 +37,14 @@ const REFETCH_DEBOUNCE_MS: u32 = 400;
 /// is not hit with one reload per event per connected client.
 const REFETCH_MIN_INTERVAL_MS: f64 = 1_500.0;
 
+pub(crate) const fn realtime_should_stop(
+    has_bootstrap: bool,
+    current_epoch: u64,
+    own_epoch: u64,
+) -> bool {
+    !has_bootstrap || current_epoch != own_epoch
+}
+
 /// Coalesces bursts of realtime events into a single background bootstrap
 /// refetch, deferred while any editor is open and rate-limited under churn.
 pub(crate) fn schedule_refetch(
@@ -75,32 +83,61 @@ pub(crate) fn start_realtime(
     data: ReadSignal<Option<BootstrapDto>>,
     hold: RwSignal<i32>,
     running: StoredValue<bool>,
+    epoch: RwSignal<u64>,
+    own_epoch: u64,
     set_data: WriteSignal<Option<BootstrapDto>>,
     set_error: WriteSignal<Option<String>>,
 ) {
     spawn_local(async move {
-        use futures_util::StreamExt;
+        use futures_util::{FutureExt, StreamExt};
 
         let mut backoff_ms = 1_000u32;
         loop {
-            if data.try_get_untracked().flatten().is_none() {
+            if realtime_should_stop(
+                data.try_get_untracked().flatten().is_some(),
+                epoch.get_untracked(),
+                own_epoch,
+            ) {
                 break;
             }
             let Some(url) = websocket_url() else { break };
             let connected_at = js_sys::Date::now();
             if let Ok(mut socket) = gloo_net::websocket::futures::WebSocket::open(&url) {
-                while let Some(Ok(message)) = socket.next().await {
-                    backoff_ms = 1_000;
-                    if let gloo_net::websocket::Message::Text(text) = message {
-                        // Echo suppression happens server-side: ws_loop skips
-                        // events whose session-namespaced client id matches
-                        // this socket's, so every event arriving here is from
-                        // another tab or user and warrants a refetch.
-                        if serde_json::from_str::<WorkspaceEventDto>(&text).is_ok() {
-                            schedule_refetch(data, hold, set_data, set_error);
+                loop {
+                    let incoming = socket.next().fuse();
+                    let cancel_tick = gloo_timers::future::TimeoutFuture::new(500).fuse();
+                    futures_util::pin_mut!(incoming, cancel_tick);
+                    futures_util::select! {
+                        message = incoming => match message {
+                            Some(Ok(gloo_net::websocket::Message::Text(text))) => {
+                                backoff_ms = 1_000;
+                                // Echo suppression happens server-side: every
+                                // event arriving here warrants a refetch.
+                                if serde_json::from_str::<WorkspaceEventDto>(&text).is_ok() {
+                                    schedule_refetch(data, hold, set_data, set_error);
+                                }
+                            }
+                            Some(Ok(_)) => backoff_ms = 1_000,
+                            Some(Err(_)) | None => break,
+                        },
+                        () = cancel_tick => {
+                            if realtime_should_stop(
+                                data.try_get_untracked().flatten().is_some(),
+                                epoch.get_untracked(),
+                                own_epoch,
+                            ) {
+                                break;
+                            }
                         }
                     }
                 }
+            }
+            if realtime_should_stop(
+                data.try_get_untracked().flatten().is_some(),
+                epoch.get_untracked(),
+                own_epoch,
+            ) {
+                break;
             }
             // A connection that lived for a while may have missed events when
             // it dropped; sync up once before reconnecting.
@@ -113,7 +150,10 @@ pub(crate) fn start_realtime(
             gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
             backoff_ms = (backoff_ms * 2).min(30_000);
         }
-        running.set_value(false);
+        // A newer login may already own the running flag.
+        if epoch.get_untracked() == own_epoch {
+            running.set_value(false);
+        }
     });
 }
 

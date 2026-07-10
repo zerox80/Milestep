@@ -5,6 +5,7 @@ use crate::*;
 pub(crate) async fn assemble_tasks(
     db: &PgPool,
     rows: Vec<TaskRow>,
+    include_details: bool,
 ) -> Result<Vec<TaskDto>, AppError> {
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -58,14 +59,18 @@ pub(crate) async fn assemble_tasks(
         });
     }
 
-    let comment_rows: Vec<CommentRow> = sqlx::query_as(
-        "SELECT c.id, c.task_id, c.user_id, u.name AS author_name, c.body, c.created_at \
-         FROM comments c JOIN users u ON u.id = c.user_id \
-         WHERE c.task_id = ANY($1) ORDER BY c.created_at DESC",
-    )
-    .bind(&ids)
-    .fetch_all(db)
-    .await?;
+    let comment_rows: Vec<CommentRow> = if include_details {
+        sqlx::query_as(
+            "SELECT c.id, c.task_id, c.user_id, u.name AS author_name, c.body, c.created_at \
+             FROM comments c JOIN users u ON u.id = c.user_id \
+             WHERE c.task_id = ANY($1) ORDER BY c.created_at DESC",
+        )
+        .bind(&ids)
+        .fetch_all(db)
+        .await?
+    } else {
+        Vec::new()
+    };
     let mut comments: HashMap<Uuid, Vec<CommentDto>> = HashMap::new();
     for c in comment_rows {
         comments.entry(c.task_id).or_default().push(CommentDto {
@@ -80,13 +85,17 @@ pub(crate) async fn assemble_tasks(
         });
     }
 
-    let attachment_rows: Vec<AttachmentRow> = sqlx::query_as(
-        "SELECT id, task_id, file_name, kind, size_bytes FROM attachments \
-         WHERE task_id = ANY($1) ORDER BY created_at DESC",
-    )
-    .bind(&ids)
-    .fetch_all(db)
-    .await?;
+    let attachment_rows: Vec<AttachmentRow> = if include_details {
+        sqlx::query_as(
+            "SELECT id, task_id, file_name, kind, size_bytes FROM attachments \
+             WHERE task_id = ANY($1) ORDER BY created_at DESC",
+        )
+        .bind(&ids)
+        .fetch_all(db)
+        .await?
+    } else {
+        Vec::new()
+    };
     let mut attachments: HashMap<Uuid, Vec<AttachmentDto>> = HashMap::new();
     for a in attachment_rows {
         attachments
@@ -135,6 +144,7 @@ pub(crate) async fn assemble_tasks(
                 created_label_en: relative_label(row.created_at, "en"),
                 updated_label_de: relative_label(row.updated_at, "de"),
                 updated_label_en: relative_label(row.updated_at, "en"),
+                details_loaded: include_details,
             })
         })
         .collect()

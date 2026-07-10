@@ -240,6 +240,10 @@ pub struct TaskDto {
     pub created_label_en: String,
     pub updated_label_de: String,
     pub updated_label_en: String,
+    /// False in collection/bootstrap responses, which intentionally omit the
+    /// potentially unbounded comment and attachment history. `GET /tasks/{id}`
+    /// and mutation responses return a detail-complete task.
+    pub details_loaded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

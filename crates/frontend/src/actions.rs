@@ -223,6 +223,12 @@ pub(crate) async fn refresh_bootstrap(
             set_data.set(Some(next));
             set_error.set(None);
         }
+        Err(err) if err.status == 401 => {
+            // Session expiry and logout-all from another tab must remove the
+            // stale workspace data just like the initial bootstrap does.
+            set_data.set(None);
+            set_error.set(None);
+        }
         Err(err) => set_error.set(Some(err.message)),
     }
 }

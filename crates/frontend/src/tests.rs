@@ -1,6 +1,13 @@
 use super::*;
 
 #[test]
+fn realtime_stops_on_logout_or_generation_change() {
+    assert!(!realtime_should_stop(true, 7, 7));
+    assert!(realtime_should_stop(false, 7, 7));
+    assert!(realtime_should_stop(true, 8, 7));
+}
+
+#[test]
 fn civil_day_roundtrip() {
     for iso in ["2026-06-11", "2024-02-29", "1999-12-31", "2026-01-01"] {
         let n = iso_day_number(iso).expect("parses");
