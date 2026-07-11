@@ -215,7 +215,7 @@ pub(crate) async fn create_session(
 }
 
 /// Lowercase-hex SHA-256 of the hyphenated token string. Must stay in sync
-/// with the backfill expression in migration 009 (`encode(sha256(...), 'hex')`)
+/// with migration 009 (`encode(digest(convert_to(...), 'sha256'), 'hex')`)
 /// so sessions issued before the migration keep working.
 pub(crate) fn session_token_hash(token: Uuid) -> String {
     use std::fmt::Write as _;

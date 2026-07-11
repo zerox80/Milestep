@@ -5,7 +5,13 @@
 -- with the exact same encoding the backend uses (lowercase hex of the SHA-256
 -- of the hyphenated lowercase UUID string, see session_token_hash) keeps every
 -- session issued before this migration valid.
+--
+-- `digest` is supplied by pgcrypto. Create the extension before using it so
+-- this migration has no deployment-specific prerequisite.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 ALTER TABLE sessions ADD COLUMN token_hash TEXT;
-UPDATE sessions SET token_hash = encode(sha256(convert_to(id::text, 'UTF8')), 'hex');
+UPDATE sessions
+SET token_hash = encode(digest(convert_to(id::text, 'UTF8'), 'sha256'), 'hex');
 ALTER TABLE sessions ALTER COLUMN token_hash SET NOT NULL;
 CREATE UNIQUE INDEX sessions_token_hash_key ON sessions (token_hash);

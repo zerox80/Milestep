@@ -196,3 +196,18 @@ async fn workspace_role_reflects_membership() {
         Some(None)
     );
 }
+
+#[tokio::test]
+async fn migration_009_provisions_matching_session_hashes() {
+    let Some(pool) = connect().await else { return };
+    let token = Uuid::parse_str("6f1c4f42-1b2a-4c3d-8e5f-000000000001").expect("valid UUID");
+
+    let hash: String =
+        sqlx::query_scalar("SELECT encode(digest(convert_to($1::text, 'UTF8'), 'sha256'), 'hex')")
+            .bind(token.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("pgcrypto SHA-256 query succeeds");
+
+    assert_eq!(hash, session_token_hash(token));
+}
