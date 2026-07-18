@@ -1,30 +1,11 @@
 use crate::*;
 
-#[derive(Clone, Copy)]
-pub(crate) struct AppSignals {
-    pub(crate) lang: ReadSignal<Lang>,
-    pub(crate) set_lang: WriteSignal<Lang>,
-    pub(crate) nav: ReadSignal<NavView>,
-    pub(crate) set_nav: WriteSignal<NavView>,
-    pub(crate) board_mode: ReadSignal<String>,
-    pub(crate) set_board_mode: WriteSignal<String>,
-    pub(crate) search_query: ReadSignal<String>,
-    pub(crate) set_search_query: WriteSignal<String>,
-    pub(crate) open_task: ReadSignal<Option<String>>,
-    pub(crate) set_open_task: WriteSignal<Option<String>>,
-    pub(crate) open_ticket: ReadSignal<Option<String>>,
-    pub(crate) set_open_ticket: WriteSignal<Option<String>>,
-    pub(crate) show_create: ReadSignal<bool>,
-    pub(crate) set_show_create: WriteSignal<bool>,
-    pub(crate) show_create_ticket: ReadSignal<bool>,
-    pub(crate) set_show_create_ticket: WriteSignal<bool>,
-    pub(crate) show_notifications: ReadSignal<bool>,
-    pub(crate) set_show_notifications: WriteSignal<bool>,
-    pub(crate) drag_task: ReadSignal<Option<String>>,
-    pub(crate) set_drag_task: WriteSignal<Option<String>>,
-    pub(crate) set_data: WriteSignal<Option<BootstrapDto>>,
-    pub(crate) set_error: WriteSignal<Option<String>>,
-}
+use super::{
+    content::main_view,
+    helpers::{empty_view, logo},
+    metadata::{header_subtitle, header_title, nav_icon},
+    AppSignals,
+};
 
 pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
     // `AppSignals` is `Copy`; `drag_task`/`set_drag_task` are only used by
@@ -119,7 +100,7 @@ pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
                         <strong>{boot.current_user.name.clone()}</strong>
                         <small>{boot.current_user.email.clone()}</small>
                     </span>
-                    <button title="Logout" on:click=logout_action>"↗"</button>
+                    <button title="Logout" on:click=logout_action>"â†—"</button>
                 </div>
             </aside>
 
@@ -236,7 +217,7 @@ pub(crate) fn dashboard(boot: BootstrapDto, signals: &AppSignals) -> View {
     }.into_view()
 }
 
-pub(crate) fn nav_button(
+fn nav_button(
     view: NavView,
     nav: ReadSignal<NavView>,
     set_nav: WriteSignal<NavView>,
@@ -250,248 +231,4 @@ pub(crate) fn nav_button(
             {badge.map(|b| view! { <small>{b}</small> })}
         </button>
     }.into_view()
-}
-
-pub(crate) fn main_view(boot: BootstrapDto, signals: &AppSignals) -> View {
-    let AppSignals {
-        lang,
-        nav,
-        set_nav,
-        board_mode,
-        search_query,
-        set_search_query,
-        set_open_task,
-        drag_task,
-        set_drag_task,
-        set_show_create,
-        set_show_create_ticket,
-        set_open_ticket,
-        set_data,
-        set_error,
-        ..
-    } = *signals;
-
-    let query = search_query.get();
-    if search_is_active(&query) {
-        return search_results_view(
-            boot,
-            lang,
-            set_open_task,
-            set_open_ticket,
-            set_search_query,
-            query,
-        );
-    }
-
-    match nav.get() {
-        NavView::Overview => overview_view(boot, lang, set_open_task, set_data, set_error),
-        NavView::Board if board_mode.get() == "list" => list_view(boot, lang, set_open_task),
-        NavView::Board => board_view(
-            boot,
-            lang,
-            set_open_task,
-            drag_task,
-            set_drag_task,
-            set_show_create,
-            set_data,
-            set_error,
-        ),
-        NavView::Tickets => ticket_view(boot, lang, set_show_create_ticket, set_open_ticket),
-        NavView::Calendar => calendar_view(boot, lang, set_nav, set_open_task),
-        NavView::Gantt => gantt_view(boot, lang, set_open_task),
-        NavView::Roadmap => roadmap_view(boot, lang, set_open_task),
-        NavView::Team => team_view(boot, lang),
-        NavView::Admin => admin_view(boot, lang, set_data, set_error),
-        NavView::Settings => settings_view(lang),
-    }
-}
-
-pub(crate) fn stat(icon: AppIcon, value: usize, label: &'static str, tone: &'static str) -> View {
-    view! {
-        <article class=format!("stat-card {tone}")><span>{app_icon(icon)}</span><strong>{value}</strong><small>{label}</small></article>
-    }.into_view()
-}
-
-/// Empty placeholder rendered where a conditional branch contributes nothing.
-/// Leptos still needs a node, so this stands in for the `else` of inline `if`s.
-pub(crate) fn empty_view() -> View {
-    view! { <span/> }.into_view()
-}
-
-/// Native `window.confirm` dialog. Returns false when the browser has no
-/// window or blocks the prompt, so callers treat "no answer" as "cancel".
-pub(crate) fn confirm(message: &str) -> bool {
-    web_sys::window()
-        .and_then(|w| w.confirm_with_message(message).ok())
-        .unwrap_or(false)
-}
-
-/// Native confirm for a plain "delete &lt;name&gt;?" action. Returns false on cancel.
-pub(crate) fn confirm_delete(name: &str, lang: Lang) -> bool {
-    let message = if lang.is_de() {
-        format!("{name} wirklich löschen?")
-    } else {
-        format!("Delete {name}?")
-    };
-    confirm(&message)
-}
-
-/// Confirm removing a member from the workspace.
-pub(crate) fn confirm_remove_member(name: &str, lang: Lang) -> bool {
-    let message = if lang.is_de() {
-        format!("{name} wirklich aus dem Workspace entfernen?")
-    } else {
-        format!("Remove {name} from the workspace?")
-    };
-    confirm(&message)
-}
-
-/// Confirm deleting an attachment.
-pub(crate) fn confirm_delete_attachment(name: &str, lang: Lang) -> bool {
-    let message = if lang.is_de() {
-        format!("Anhang {name} wirklich löschen?")
-    } else {
-        format!("Delete attachment {name}?")
-    };
-    confirm(&message)
-}
-
-/// Validates a required title field. When empty, sets the in-form error to the
-/// localized message and returns false so the caller bails out; otherwise
-/// clears the error and returns true.
-pub(crate) fn require_title(
-    value: &str,
-    de: &'static str,
-    en: &'static str,
-    lang: Lang,
-    set_local_error: WriteSignal<Option<String>>,
-) -> bool {
-    if value.trim().is_empty() {
-        set_local_error.set(Some(lang.tr(de, en).to_string()));
-        return false;
-    }
-    set_local_error.set(None);
-    true
-}
-
-/// Mirrors an API failure into both the in-form and the global error signals.
-pub(crate) fn report_api_error(
-    err: &ApiError,
-    set_local_error: WriteSignal<Option<String>>,
-    set_error: WriteSignal<Option<String>>,
-) {
-    set_local_error.set(Some(err.message.clone()));
-    set_error.set(Some(err.message.clone()));
-}
-
-pub(crate) fn logo() -> View {
-    view! {
-        <span class="logo">
-            <i><b></b><b></b><b></b></i>
-            <span>"Milestep"</span>
-        </span>
-    }
-    .into_view()
-}
-
-pub(crate) fn header_title(boot: &BootstrapDto, nav: NavView, lang: Lang) -> String {
-    match (nav, lang) {
-        (NavView::Overview, Lang::De) => {
-            format!("Guten Morgen, {}", first_name(&boot.current_user.name))
-        }
-        (NavView::Overview, Lang::En) => {
-            format!("Good morning, {}", first_name(&boot.current_user.name))
-        }
-        (NavView::Board, Lang::De) => "Aufgaben-Board".into(),
-        (NavView::Board, Lang::En) => "Task board".into(),
-        (NavView::Tickets, Lang::De) => "Tickets".into(),
-        (NavView::Tickets, Lang::En) => "Tickets".into(),
-        (NavView::Calendar, Lang::De) => "Kalender".into(),
-        (NavView::Calendar, Lang::En) => "Calendar".into(),
-        (NavView::Gantt, Lang::De) => "Gantt-Diagramm".into(),
-        (NavView::Gantt, Lang::En) => "Gantt chart".into(),
-        (NavView::Roadmap, Lang::De) => "Bau-Roadmap".into(),
-        (NavView::Roadmap, Lang::En) => "Project roadmap".into(),
-        (NavView::Team, Lang::De) => "Team".into(),
-        (NavView::Team, Lang::En) => "Team".into(),
-        (NavView::Admin, Lang::De) => "Administration".into(),
-        (NavView::Admin, Lang::En) => "Administration".into(),
-        (NavView::Settings, Lang::De) => "Einstellungen".into(),
-        (NavView::Settings, Lang::En) => "Settings".into(),
-    }
-}
-
-pub(crate) fn header_subtitle(boot: &BootstrapDto, nav: NavView, lang: Lang) -> String {
-    let today = today_iso();
-    let due_today = boot
-        .tasks
-        .iter()
-        .filter(|t| !t.status_is_done && t.due_date.as_deref() == Some(today.as_str()))
-        .count();
-    match (nav, lang) {
-        (NavView::Overview, Lang::De) => match due_today {
-            1 => "Du hast 1 Aufgabe heute fällig.".into(),
-            n => format!("Du hast {n} Aufgaben heute fällig."),
-        },
-        (NavView::Overview, Lang::En) => match due_today {
-            1 => "You have 1 task due today.".into(),
-            n => format!("You have {n} tasks due today."),
-        },
-        (NavView::Board, Lang::De) => format!(
-            "{} Aufgaben · {} Spalten",
-            boot.tasks.len(),
-            boot.statuses.len()
-        ),
-        (NavView::Board, Lang::En) => format!(
-            "{} tasks · {} columns",
-            boot.tasks.len(),
-            boot.statuses.len()
-        ),
-        (NavView::Tickets, Lang::De) => format!(
-            "{} Tickets · {} offen",
-            boot.tickets.len(),
-            boot.tickets
-                .iter()
-                .filter(|t| matches!(t.status, TicketStatus::Open | TicketStatus::InProgress))
-                .count()
-        ),
-        (NavView::Tickets, Lang::En) => format!(
-            "{} tickets · {} open",
-            boot.tickets.len(),
-            boot.tickets
-                .iter()
-                .filter(|t| matches!(t.status, TicketStatus::Open | TicketStatus::InProgress))
-                .count()
-        ),
-        (NavView::Calendar, Lang::De) => "Fälligkeiten und Meilensteine".into(),
-        (NavView::Calendar, Lang::En) => "Due dates and milestones".into(),
-        (NavView::Gantt, Lang::De) => "Zeitplan, Abhängigkeiten und Meilensteine".into(),
-        (NavView::Gantt, Lang::En) => "Schedule, dependencies and milestones".into(),
-        (NavView::Roadmap, Lang::De) => "Initiativen nach Zeithorizont".into(),
-        (NavView::Roadmap, Lang::En) => "Initiatives by horizon".into(),
-        (NavView::Team, Lang::De) => {
-            format!("{} Mitglieder · {}", boot.members.len(), boot.project.name)
-        }
-        (NavView::Team, Lang::En) => {
-            format!("{} members · {}", boot.members.len(), boot.project.name)
-        }
-        (NavView::Admin, Lang::De) => "Mitglieder, Rollen, System und Sicherheit".into(),
-        (NavView::Admin, Lang::En) => "Members, roles, system and security".into(),
-        (NavView::Settings, Lang::De) => "Design und persönliche Einstellungen".into(),
-        (NavView::Settings, Lang::En) => "Appearance and personal preferences".into(),
-    }
-}
-
-pub(crate) fn nav_icon(view: NavView) -> AppIcon {
-    match view {
-        NavView::Overview => AppIcon::Dashboard,
-        NavView::Board => AppIcon::Kanban,
-        NavView::Tickets => AppIcon::Ticket,
-        NavView::Calendar => AppIcon::Calendar,
-        NavView::Gantt => AppIcon::Timeline,
-        NavView::Roadmap => AppIcon::Roadmap,
-        NavView::Team => AppIcon::Users,
-        NavView::Admin => AppIcon::Settings,
-        NavView::Settings => AppIcon::Sliders,
-    }
 }
